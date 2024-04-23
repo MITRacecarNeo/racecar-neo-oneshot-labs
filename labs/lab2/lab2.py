@@ -125,7 +125,7 @@ def start():
 
     # Print start message
     print(
-        ">> Lab 2A - Color Image Line Following\n"
+        ">> Lab 2 - Color Image Line Following\n"
         "\n"
         "Controls:\n"
         "   A button = print current speed and angle\n"

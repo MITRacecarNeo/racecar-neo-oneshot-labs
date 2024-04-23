@@ -39,7 +39,7 @@ V_low, V_high = 0, 255
 
 COLOR_THRESH = ((H_low, S_low, V_low), (H_high, S_high, V_high))
 CROP_FLOOR = ((180, 0), (rc.camera.get_height(), rc.camera.get_width()))
-speed_div = 1 # How much speed should be divided
+speed_div = 7 # How much speed should be divided
 angle_div = 3 # How much angle should be divided
 mode_mod = False # False mode = Speed, True mode = Angle
 

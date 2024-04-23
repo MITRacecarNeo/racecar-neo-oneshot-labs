@@ -16,7 +16,7 @@ rc.drive.set_speed_angle() function. Complete the lines of code under the #TODO 
 to complete the lab.
 
 Expected Outcome: When the user runs the script, they are able to control the RACECAR
-using the following keys:
+using the following controller buttons:
 - When the right trigger is pressed, the RACECAR drives forward
 - When the left trigger is pressed, the RACECAR drives backward
 - When the left joystick's x-axis has a value of greater than 0, the RACECAR's wheels turns to the right
@@ -113,7 +113,11 @@ def update():
     # such that when the car is within 30cm of a obstacle directly in front or behind it,
     # the vehicle will override the user's commands and stop the vehicle. The user should be
     # allowed to drive away from the obstacle even after the system performs the safety override.
-    scan = rc.lidar.get_samples() # Return 720 samples in an array
+    scan = rc.lidar.get_samples() # Return 505 samples in an array, CCW
+
+    # TODO Part 6: Implement a way to display the LIDAR distance on the dot matrix display.
+    # Create a new empty 24x8 array in the start() function, and then edit the array using the
+    # forward distance measurement from the LIDAR.
 
     # Send the speed and angle values to the RACECAR
     print(f"Speed: {speed} || Angle: {angle}")

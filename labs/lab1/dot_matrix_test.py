@@ -3,23 +3,20 @@ MIT BWSI Autonomous RACECAR
 MIT License
 racecar-neo-oneshot-labs
 
-File Name: grand_prix.py
+File Name: dot_matrix_test.py
 
-Title: Grand Prix Day!
+Title: Dot Matrix Test
 
-Author: [PLACEHOLDER] << [Write your name or team name here]
+Author: Chris Lai (MITLL)
 
-Purpose: Write a script to enable fully autonomous behavior from the RACECAR. The
-RACECAR will traverse the obstacle course autonomously without human intervention.
-Once the start button is pressed, the RACECAR must drive through the course until it
-reaches the cone at the end, in which it will then stop. You are disqualified if
-you stop too far from the cone or hit the cone.
+Purpose: To test dot matrix functionalities for rapidly displaying debug messages
 
-Note:  There is no template code in this document to follow except for the RACECAR script 
-structure found in template.py. You are expected to use code written from previous labs
-to complete this challenge. Good luck!
-
-Expected Outcome: Varies per grand prix event. Please consult your instructor for more details.
+Expected Outcome: When the buttons are pressed, display the following messages on the
+dot matrix display:
+- When the A button is pressed, toggle all the lights on and off
+- When the B button is pressed, shift a random number betwen 0-9 to the screen [UNFINISHED]
+- When the X button is pressed, show the LIDAR distance to the screen [UNFINISHED]
+- When the Y button is pressed, write someo text on the screen using the scroll feature [UNFINISHED]
 """
 
 ########################################################################################
@@ -27,10 +24,11 @@ Expected Outcome: Varies per grand prix event. Please consult your instructor fo
 ########################################################################################
 
 import sys
+import numpy as np
 
 # If this file is nested inside a folder in the labs folder, the relative path should
 # be [1, ../../library] instead.
-sys.path.insert(1, '../../library')
+sys.path.insert(0, '../library')
 import racecar_core
 
 ########################################################################################
@@ -40,11 +38,36 @@ import racecar_core
 rc = racecar_core.create_racecar()
 
 # Declare any global variables here
+global mat
 
+# Create new empty matrix as a display
+mat = rc.display.new_matrix()
 
 ########################################################################################
 # Functions
 ########################################################################################
+
+# [FUNCTION] Returns a number 0-9 in an 8x8 matrix
+def disp_num(num):
+    arr = np.empty(shape = (8, 8))
+    arr.fill(0) # Init numpy array of size 8 (rows) x 8 (columns) with all zeros
+    
+    if num < 0 or num > 9:
+        print(f"[disp_num] Error: Number out of range! Enter a number between 0-9.")
+        return None
+    else:
+        if num == 0:
+            arr = np.array([[0, 0, 0, 0, 0, 0, 0, 0],
+                            [0, 1, 1, 1, 1, 1, 1, 0],
+                            [0, 1, 1, 0, 0, 1, 1, 0],
+                            [0, 1, 1, 0, 0, 1, 1, 0],
+                            [0, 1, 1, 0, 0, 1, 1, 0],
+                            [0, 1, 1, 0, 0, 1, 1, 0],
+                            [0, 1, 1, 1, 1, 1, 1, 0],
+                            [0, 0, 0, 0, 0, 0, 0, 0],])
+            
+    return arr
+            
 
 # [FUNCTION] The start function is run once every time the start button is pressed
 def start():
@@ -56,16 +79,10 @@ def start():
 def update():
     pass # Remove 'pass' and write your source code for the update() function here
 
-# [FUNCTION] update_slow() is similar to update() but is called once per second by
-# default. It is especially useful for printing debug messages, since printing a 
-# message every frame in update is computationally expensive and creates clutter
-def update_slow():
-    pass # Remove 'pass and write your source code for the update_slow() function here
-
 ########################################################################################
 # DO NOT MODIFY: Register start and update and begin execution
 ########################################################################################
 
 if __name__ == "__main__":
-    rc.set_start_update(start, update, update_slow)
+    rc.set_start_update(start, update)
     rc.go()
