@@ -251,9 +251,8 @@ def update():
     speed = 1/speed_div
     angle /= angle_div
     
-    # Send speed and angle commands to RACECAR (only when trigger is pressed)
-    if rc.controller.get_trigger(rc.controller.Trigger.RIGHT) > 0.1:
-        rc.drive.set_speed_angle(speed, angle)
+    # Send speed and angle commands to RACECAR 
+    rc.drive.set_speed_angle(speed, angle)
     
     ######################
     # CONTROLLER OPTIONS #
