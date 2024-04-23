@@ -230,13 +230,14 @@ def update():
     # Make manual mask for updating colors
     img = rc.camera.get_color_image()
     img = cv.resize(img, (320,240))
-    hsv_image = cv.cvtColor(img, cv.COLOR_BGR2HSV)
+    hsv_image = cv.cvtColor(img, cv.COLOR_RGB2HSV) # Logitech camera returns RGB image
     hsv_low = np.array([H_low, S_low, V_low], np.uint8)
     hsv_high = np.array([H_high, S_high, V_high], np.uint8)
     mask = cv.inRange(hsv_image, hsv_low, hsv_high)
     cv.imshow('mask', mask)
 
     # Update contour function
+    img = cv.cvtColor(img, cv.COLOR_RGB2BGR) # Convert back to BGR for processing
     update_contour(img)
 
     # Choose an angle based on contour_center
