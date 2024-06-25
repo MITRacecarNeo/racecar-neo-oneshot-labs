@@ -65,6 +65,7 @@ angle = 0.0  # The current angle of the car's wheels
 contour_center = None  # The (pixel row, pixel column) of contour
 contour_area = 0  # The area of contour
 
+
 ########################################################################################
 # Functions
 ########################################################################################
@@ -107,7 +108,6 @@ def update_contour():
         rc.display.show_color_image(image)
 
 
-
 # [FUNCTION] The start function is run once every time the start button is pressed
 def start():
     global speed
@@ -131,6 +131,7 @@ def start():
         "   A button = print current speed and angle\n"
         "   B button = print contour center and area"
     )
+
 
 # [FUNCTION] After start() is run, this function is run once every frame (ideally at
 # 60 frames per second or slower depending on processing speed) until the back button
@@ -175,6 +176,7 @@ def update():
             print("No contour found")
         else:
             print("Center:", contour_center, "Area:", contour_area)
+
 
 # [FUNCTION] update_slow() is similar to update() but is called once per second by
 # default. It is especially useful for printing debug messages, since printing a 
