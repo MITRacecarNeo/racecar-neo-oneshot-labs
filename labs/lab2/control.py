@@ -53,7 +53,7 @@ speed = 0.0  # The current speed of the car
 angle = 0.0  # The current angle of the car's wheels
 contour_center = None  # The (pixel row, pixel column) of contour
 contour_area = 0  # The area of contour
-prev_error = 0 # The previous error saved
+prev_error = 0  # The previous error saved
 
 # Drive Mode Enumeration:
 # 0: None
@@ -61,6 +61,7 @@ prev_error = 0 # The previous error saved
 # 2: Proportional Control
 # 3: PD Control
 drive_mode = 0
+
 
 ########################################################################################
 # Functions
@@ -99,6 +100,7 @@ def update_contour():
         # Display the image to the screen
         rc.display.show_color_image(image)
 
+
 # [FUNCTION] The start function is run once every time the start button is pressed
 def start():
     global speed
@@ -110,7 +112,8 @@ def start():
 
     # Set initial driving speed and angle
     rc.drive.set_speed_angle(speed, angle)
-    
+
+
 # [FUNCTION] After start() is run, this function is run once every frame (ideally at
 # 60 frames per second or slower depending on processing speed) until the back button
 # is pressed  
@@ -133,7 +136,7 @@ def update():
     if rc.controller.was_pressed(rc.controller.Button.Y):
         drive_mode = 3
         print(f"Set Drive Mode to 3: PD controller")
-        
+
     # Define current frame constants for calculating closed-loop controller
     setpoint = 320
     error = setpoint - contour_center[1]
@@ -141,27 +144,27 @@ def update():
     prev_error = error
 
     # Define PD coefficients
-    KP = 1/320 # normalize screen pixels to angle range
-    KD = 0.01 # default value, will need tuning later
+    KP = 1 / 320  # normalize screen pixels to angle range
+    KD = 0.01  # default value, will need tuning later
 
     # Define behaviors for calculating angle based on each drive mode
-    if drive_mode == 0: # Nothing happens
+    if drive_mode == 0:  # Nothing happens
         angle = 0
-    elif drive_mode == 1: # Bang-bang control
+    elif drive_mode == 1:  # Bang-bang control
         if error < 0:
             angle = 1
         elif error > 0:
             angle = -1
         else:
             angle = 0
-    elif drive_mode == 2: # Proportional control
+    elif drive_mode == 2:  # Proportional control
         angle = KP * error
         # Saturate angle in case goes over bounds
         if angle > 1.0:
             angle = 1.0
         elif angle < -1.0:
             angle = -1.0
-    elif drive_mode == 3: # PD control
+    elif drive_mode == 3:  # PD control
         angle = KP * error + KD * de_dt
         # Saturate angle in case goes over bounds
         if angle > 1.0:
@@ -170,11 +173,12 @@ def update():
             angle = -1.0
 
     # Set a comfortable speed for driving
-    speed = 1/8.5 # May need to be tuned!!
+    speed = 1 / 8.5  # May need to be tuned!!
 
     # Send speed and angle to the car
     print("Speed:", speed, "Angle:", angle)
     rc.drive.set_speed_angle(speed, angle)
+
 
 ########################################################################################
 # DO NOT MODIFY: Register start and update and begin execution

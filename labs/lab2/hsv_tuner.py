@@ -19,7 +19,7 @@ import cv2 as cv
 import numpy as np
 import tkinter as tk
 from tkinter import ttk
-from tkinter import font as tkfont 
+from tkinter import font as tkfont
 import threading
 
 # If this file is nested inside a folder in the labs folder, the relative path should
@@ -39,9 +39,9 @@ V_low, V_high = 0, 255
 
 COLOR_THRESH = ((H_low, S_low, V_low), (H_high, S_high, V_high))
 CROP_FLOOR = ((180, 0), (rc.camera.get_height(), rc.camera.get_width()))
-speed_div = 7 # How much speed should be divided
-angle_div = 3 # How much angle should be divided
-mode_mod = False # False mode = Speed, True mode = Angle
+speed_div = 7  # How much speed should be divided
+angle_div = 3  # How much angle should be divided
+mode_mod = False  # False mode = Speed, True mode = Angle
 
 speed = 0.0  # The current speed of the car
 angle = 0.0  # The current angle of the car's wheels
@@ -50,36 +50,43 @@ contour_area = 0  # The area of contour
 
 MIN_CONTOUR_AREA = 30
 
+
 # Function to adjust values (you can replace these functions with actual processing logic)
 def on_low_h_change(val):
     global H_low
     H_low = int(float(val))
     print(f"H_low: {H_low}")
 
+
 def on_low_s_change(val):
     global S_low
     S_low = int(float(val))
     print(f"S_low: {S_low}")
+
 
 def on_low_v_change(val):
     global V_low
     V_low = int(float(val))
     print(f"V_low: {V_low}")
 
+
 def on_high_h_change(val):
     global H_high
     H_high = int(float(val))
     print(f"H_high: {H_high}")
+
 
 def on_high_s_change(val):
     global S_high
     S_high = int(float(val))
     print(f"S_high: {S_high}")
 
+
 def on_high_v_change(val):
     global V_high
     V_high = int(float(val))
     print(f"V_high: {V_high}")
+
 
 # [FUNCTION] Create a GUI (tkinter) to dynamically adjust HSV values
 def create_gui():
@@ -97,7 +104,13 @@ def create_gui():
     title_label.pack()
 
     # Create and pack the subtitle label
-    subtitle_label = tk.Label(root, text="Line Following Tuner App", background='black', foreground='orange', font=subtitle_font)
+    subtitle_label = tk.Label(
+        root,
+        text="Line Following Tuner App",
+        background='black',
+        foreground='orange',
+        font=subtitle_font
+    )
     subtitle_label.pack()
 
     # Configure the ttk style for a dark theme
@@ -108,18 +121,33 @@ def create_gui():
     custom_font = tkfont.Font(family="Helvetica", size=10, weight="bold")
 
     # Configure the background and foreground of the Scale widget and labels
-    style.configure("Horizontal.TScale", background='black', troughcolor='grey', bordercolor='black', lightcolor='black', darkcolor='black', arrowcolor='white')
+    style.configure(
+        "Horizontal.TScale",
+        background='black',
+        troughcolor='grey',
+        bordercolor='black',
+        lightcolor='black',
+        darkcolor='black',
+        arrowcolor='white'
+    )
     style.configure("TLabel", background='black', foreground='white', font=custom_font)
     style.configure("Outline.TFrame", background='black', borderwidth=2, relief='solid')
 
     # Attempt to change the thumb using element create
     style.element_create('custom.Horizontal.Scale.slider', 'from', 'default')
-    style.layout('Custom.Horizontal.TScale',
-                 [('Horizontal.Scale.trough',
-                   {'sticky': 'nswe',
-                    'children': [('custom.Horizontal.Scale.slider', {'side': 'left', 'sticky': ''})]
-                   })])
-    style.configure('Custom.Horizontal.TScale', sliderrelief='flat', sliderlength=30, slidershadow='black', slidercolor='blue')
+    style.layout('Custom.Horizontal.TScale', [
+        ('Horizontal.Scale.trough', {
+            'sticky': 'nswe',
+            'children': [('custom.Horizontal.Scale.slider', {'side': 'left', 'sticky': ''})]
+        })
+    ])
+    style.configure(
+        'Custom.Horizontal.TScale',
+        sliderrelief='flat',
+        sliderlength=30,
+        slidershadow='black',
+        slidercolor='blue'
+    )
 
     # Adjust styles to include black borders and red trough
     style.configure("Horizontal.TScale", background='black', troughcolor='grey', bordercolor='white')
@@ -132,17 +160,24 @@ def create_gui():
     def create_scale(root, label, from_, to, start, command):
         frame = ttk.Frame(root, style="Outline.TFrame")
         frame.pack(fill='x', expand=True, pady=10)
-        
+
         min_label = tk.Label(frame, text=str(from_), bg='black', fg='white', font=custom_font)
         min_label.pack(side='left')
-        
+
         max_label = tk.Label(frame, text=str(to), bg='black', fg='white', font=custom_font)
         max_label.pack(side='right')
-        
+
         current_value_label = tk.Label(frame, text=str(from_), bg='black', fg='white', font=custom_font)
         current_value_label.pack(side='top')
 
-        scale = ttk.Scale(frame, from_=from_, to=to, orient='horizontal', style="Horizontal.TScale", command=lambda v, l=current_value_label: (command(v), update_label(l, v)))
+        scale = ttk.Scale(
+            frame,
+            from_=from_,
+            to=to,
+            orient='horizontal',
+            style="Horizontal.TScale",
+            command=lambda v, l=current_value_label: (command(v), update_label(l, v))
+        )
         scale.set(start)  # Default value
         scale.pack(fill='x', expand=True, padx=4, pady=4)
 
@@ -161,15 +196,16 @@ def create_gui():
 
     root.mainloop()
 
+
 # [FUNCTION] Update the contour_center and contour_area each frame and display image
 def update_contour(img):
     global contour_center
     global contour_area
     global tk_image
-    
+
     # Crop the image to the floor directly in front of the car
     image = rc_utils.crop(img, CROP_FLOOR[0], CROP_FLOOR[1])
-    
+
     if image is None:
         contour_center = None
         contour_area = 0
@@ -196,11 +232,12 @@ def update_contour(img):
         # Display the image to the screen
         rc.display.show_color_image(image)
 
+
 # [FUNCTION] Start function isn't really needed here
 def start():
     # Set initial driving speed and angle
     rc.drive.set_speed_angle(0, 0)
-    
+
     # Start UI
     gui_thread = threading.Thread(target=create_gui)
     gui_thread.start()
@@ -217,27 +254,28 @@ def start():
         "   Y button = decrease speed/angle depending on current mode"
     )
 
+
 # [FUNCTION] Tune HSV values to RACECAR camera while in main loop
 def update():
     global COLOR_THRESH
     global mode_mod
     global speed_div
     global angle_div
-    
+
     global speed
     global angle
-    
+
     # Make manual mask for updating colors
     img = rc.camera.get_color_image()
-    img = cv.resize(img, (320,240))
-    hsv_image = cv.cvtColor(img, cv.COLOR_RGB2HSV) # Logitech camera returns RGB image
+    img = cv.resize(img, (320, 240))
+    hsv_image = cv.cvtColor(img, cv.COLOR_RGB2HSV)  # Logitech camera returns RGB image
     hsv_low = np.array([H_low, S_low, V_low], np.uint8)
     hsv_high = np.array([H_high, S_high, V_high], np.uint8)
     mask = cv.inRange(hsv_image, hsv_low, hsv_high)
     cv.imshow('mask', mask)
 
     # Update contour function
-    img = cv.cvtColor(img, cv.COLOR_RGB2BGR) # Convert back to BGR for processing
+    img = cv.cvtColor(img, cv.COLOR_RGB2BGR)  # Convert back to BGR for processing
     update_contour(img)
 
     # Choose an angle based on contour_center
@@ -246,66 +284,67 @@ def update():
         setpoint = 160
         error = setpoint - contour_center[1]
         angle = rc_utils.remap_range(error, -setpoint, setpoint, 1, -1)
-    
+
     # Modify speed and angle commands by physical RACECAR modifier
-    speed = 1/speed_div
+    speed = 1 / speed_div
     angle /= angle_div
-    
+
     # Send speed and angle commands to RACECAR 
     rc.drive.set_speed_angle(speed, angle)
-    
+
     ######################
     # CONTROLLER OPTIONS #
     ######################
-    
+
     # When A button is pressed, save the HSV Threshold to global variable
     if rc.controller.was_pressed(rc.controller.Button.A):
         print(f"HSV Threshold Saved!: ({H_low}, {S_low}, {V_low}), ({H_high}, {S_high}, {V_high})")
         COLOR_THRESH = ((H_low, S_low, V_low), (H_high, S_high, V_high))
-        
+
     # When B button is pressed, switch between SPEED and ANGLE mode
     if rc.controller.was_pressed(rc.controller.Button.B):
-        if not mode_mod: # If mode_mod = false, or currently on Speed mode,
+        if not mode_mod:  # If mode_mod = false, or currently on Speed mode,
             print("System switched to modify ANGLE")
             mode_mod = True
-        else: # If mode_mod = true, or currently on Angle mode,
+        else:  # If mode_mod = true, or currently on Angle mode,
             print("System swtiched to modify SPEED")
             mode_mod = False
-    
+
     # When X button is pressed, increase SPEED or ANGLE divisor by 1 (0 < d < 10)
     if rc.controller.was_pressed(rc.controller.Button.X):
-        if not mode_mod: # If mode_mod = false, or currently on Speed mode,
+        if not mode_mod:  # If mode_mod = false, or currently on Speed mode,
             if speed_div == 1:
                 print(f"Speed cannot be increased further! Speed modifier = 1/{speed_div}")
             else:
                 speed_div -= 0.1
                 print(f"System successfully increased car speed! Speed modifier = 1/{speed_div}")
-        else: # If mode_mod = true, or currently on Angle mode,
+        else:  # If mode_mod = true, or currently on Angle mode,
             if angle_div == 1:
                 print(f"Angle range cannot be increased further! Angle modifier = 1/{angle_div}")
             else:
                 angle_div -= 0.1
                 print(f"System successfully increased car angle range! Angle modifier = 1/{angle_div}")
-    
+
     # When Y button is pressed, decrease SPEED or ANGLE divisor by 1 (0 < d < 10)
     if rc.controller.was_pressed(rc.controller.Button.Y):
-        if not mode_mod: # If mode_mod = false, or currently on Speed mode,
+        if not mode_mod:  # If mode_mod = false, or currently on Speed mode,
             if speed_div == 9:
                 print(f"Speed cannot be decreased further! Speed modifier = 1/{speed_div}")
             else:
                 speed_div += 0.1
                 print(f"System successfully decreased car speed! Speed modifier = 1/{speed_div}")
-        else: # If mode_mod = true, or currently on Angle mode,
+        else:  # If mode_mod = true, or currently on Angle mode,
             if angle_div == 9:
                 print(f"Angle range cannot be decreased further! Angle modifier = 1/{angle_div}")
             else:
                 angle_div += 0.1
                 print(f"System successfully decreased car angle range! Angle modifier = 1/{angle_div}")
-    
+
     # When right bumper is pressed, print SPEED and ANGLE to terminal window
     if rc.controller.was_pressed(rc.controller.Button.RB):
         print(f"System Speed/Angle: Speed = {speed}, Angle = {angle}")
-    
+
+
 ########################################################################################
 # DO NOT MODIFY: Register start and update and begin execution
 ########################################################################################

@@ -35,6 +35,7 @@ rc = racecar_core.create_racecar()
 counter = 0
 isDriving = False
 
+
 ########################################################################################
 # Functions
 ########################################################################################
@@ -53,39 +54,40 @@ def start():
     # This tells the car to begin at a standstill
     rc.drive.stop()
 
+
 # [FUNCTION] After start() is run, this function is run once every frame (ideally at
 # 60 frames per second or slower depending on processing speed) until the back button
 # is pressed  
 def update():
-    
     global counter
     global isDriving
 
     # This prints a message every time the A button is pressed on the controller
     if rc.controller.was_pressed(rc.controller.Button.A):
-      print("The A button was pressed")
+        print("The A button was pressed")
 
     # Reset the counter and start driving in an L every time the B button is pressed on
     # the controller
     if rc.controller.was_pressed(rc.controller.Button.B):
-      counter = 0
-      isDriving = True # Toggle Variable
+        counter = 0
+        isDriving = True  # Toggle Variable
 
     if isDriving:
-      # rc.get_delta_time() gives the time in seconds since the last time
-      # the update function was called
-      counter += rc.get_delta_time()
+        # rc.get_delta_time() gives the time in seconds since the last time
+        # the update function was called
+        counter += rc.get_delta_time()
 
-      if counter < 1:
-        # Drive forward at full speed for one second
-        rc.drive.set_speed_angle(1, 0)
-      elif counter < 2:
-        # Turn right at full speed for the next second
-        rc.drive.set_speed_angle(1, 1)
-      else:
-        # Otherwise, stop the car
-        rc.drive.stop()
-        isDriving = False
+        if counter < 1:
+            # Drive forward at full speed for one second
+            rc.drive.set_speed_angle(1, 0)
+        elif counter < 2:
+            # Turn right at full speed for the next second
+            rc.drive.set_speed_angle(1, 1)
+        else:
+            # Otherwise, stop the car
+            rc.drive.stop()
+            isDriving = False
+
 
 # [FUNCTION] update_slow() is similar to update() but is called once per second by
 # default. It is especially useful for printing debug messages, since printing a 
@@ -96,7 +98,7 @@ def update_slow():
     than update().  By default, update_slow() is run once per second
     """
     # This prints a message every time that the right bumper is pressed during
-    # a call to to update_slow.  If we press and hold the right bumper, it
+    # a call to update_slow.  If we press and hold the right bumper, it
     # will print a message once per second
     if rc.controller.is_down(rc.controller.Button.RB):
         print("The right bumper is currently down (update_slow)")

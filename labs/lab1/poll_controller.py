@@ -46,13 +46,15 @@ global angle
 speed = 0
 angle = 0
 
+
 ########################################################################################
 # Functions
 ########################################################################################
 
 # [FUNCTION] The start function is run once every time the start button is pressed
 def start():
-    rc.drive.set_speed_angle(speed, angle) # Initialize speed to 0
+    rc.drive.set_speed_angle(speed, angle)  # Initialize speed to 0
+
 
 # [FUNCTION] After start() is run, this function is run once every frame (ideally at
 # 60 frames per second or slower depending on processing speed) until the back button
@@ -65,13 +67,13 @@ def update():
     # When the triggers are pressed, first detect which trigger is pressed, determine
     # the value of the trigger, and then scale the value of the trigger to the speed
     # !! Right trigger (forward) has priority over left trigger (backwards)
-    if rc.controller.get_trigger(rc.controller.Trigger.RIGHT) > 0.1: # Accounts for dead space
-        speed = rc.controller.get_trigger(rc.controller.Trigger.RIGHT) # Range is 0.1 - 1
-    elif rc.controller.get_trigger(rc.controller.Trigger.LEFT) > 0.1: # Accounts for dead space
-        speed = -1 * rc.controller.get_trigger(rc.controller.Trigger.LEFT) # Range is 0.1 - 1
+    if rc.controller.get_trigger(rc.controller.Trigger.RIGHT) > 0.1:  # Accounts for dead space
+        speed = rc.controller.get_trigger(rc.controller.Trigger.RIGHT)  # Range is 0.1 - 1
+    elif rc.controller.get_trigger(rc.controller.Trigger.LEFT) > 0.1:  # Accounts for dead space
+        speed = -1 * rc.controller.get_trigger(rc.controller.Trigger.LEFT)  # Range is 0.1 - 1
     else:
         speed = 0
-      
+
     # [TURNING RIGHT/LEFT] Variable turning angle
     # When the left joystick's x-axis is moved, map the turning angle to the left joystick
     # Turning angle range: [-1, 1], Joystick range: [-1, 1]
@@ -82,8 +84,9 @@ def update():
     else:
         angle = 0
 
-    print(f"Speed: {speed} || Angle: {angle}") # Print current speed + angle to terminal (for debug)
-    rc.drive.set_speed_angle(speed, angle) # Send current speed + angle to the RACECAR
+    print(f"Speed: {speed} || Angle: {angle}")  # Print current speed + angle to terminal (for debug)
+    rc.drive.set_speed_angle(speed, angle)  # Send current speed + angle to the RACECAR
+
 
 ########################################################################################
 # DO NOT MODIFY: Register start and update and begin execution
