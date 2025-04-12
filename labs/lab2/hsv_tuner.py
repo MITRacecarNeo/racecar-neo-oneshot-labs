@@ -204,7 +204,7 @@ def update_contour(img):
     global tk_image
 
     # Crop the image to the floor directly in front of the car
-    image = rc_utils.crop(img, CROP_FLOOR[0], CROP_FLOOR[1])
+    # image = rc_utils.crop(img, CROP_FLOOR[0], CROP_FLOOR[1])
 
     if image is None:
         contour_center = None
@@ -272,21 +272,27 @@ def update():
     hsv_low = np.array([H_low, S_low, V_low], np.uint8)
     hsv_high = np.array([H_high, S_high, V_high], np.uint8)
     mask = cv.inRange(hsv_image, hsv_low, hsv_high)
+    mask = cv.bitwise_and(img, img, mask=mask)
     cv.imshow('mask', mask)
 
     # Update contour function
     update_contour(img)
 
-    # Choose an angle based on contour_center
-    # If we could not find a contour, keep the previous angle
-    if contour_center is not None:
-        setpoint = 160
-        error = setpoint - contour_center[1]
-        angle = rc_utils.remap_range(error, -setpoint, setpoint, 1, -1)
+    # Manual controller input
+    if rc.controller.get_trigger(rc.controller.Trigger.RIGHT) > 0.5:
+        speed = 1
+    elif rc.controller.get_trigger(rc.controller.Trigger.LEFT) > 0.5:
+        speed = -1
+    else:
+        speed = 0
 
-    # Modify speed and angle commands by physical RACECAR modifier
-    speed = 1 / speed_div
-    angle /= angle_div
+    (x, y) = rc.controller.get_joystick(rc.controller.Joystick.LEFT)
+    if x > 0.5:
+        angle = 1
+    elif x < -0.5:
+        angle = -1
+    else:
+        angle = 0
 
     # Send speed and angle commands to RACECAR 
     rc.drive.set_speed_angle(speed, angle)
