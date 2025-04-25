@@ -203,6 +203,8 @@ def update_contour(img):
     global contour_area
     global tk_image
 
+    image = img
+
     # Crop the image to the floor directly in front of the car
     # image = rc_utils.crop(img, CROP_FLOOR[0], CROP_FLOOR[1])
 
