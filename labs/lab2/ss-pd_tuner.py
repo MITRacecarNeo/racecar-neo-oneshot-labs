@@ -270,7 +270,7 @@ def update():
     # Automatically adjust speed based on error if error > setpoint * 2
     if error > -setpoint:
         speed = kp_now * error
-        speed = rc_utils.clamp(speed, -1, 1)
+        speed = rc_utils.clamp(speed, -tune_speed, tune_speed)
         if b < -0.1:
             speed = b
     else:
