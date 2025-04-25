@@ -272,9 +272,9 @@ def update():
         speed = kp_now * error
         speed = rc_utils.clamp(speed, -tune_speed, tune_speed)
         if b < -0.1:
-            speed = b
+            speed = rc_utils.clamp(b, -tune_speed, tune_speed)
     else:
-        speed = b
+        speed = rc_utils.clamp(b, -tune_speed, tune_speed)
 
     # Angle offset modifier
     angle += angle_offset
