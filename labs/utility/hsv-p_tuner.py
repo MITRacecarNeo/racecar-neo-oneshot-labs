@@ -131,7 +131,7 @@ def create_gui():
         font=subtitle_font
     )
     subtitle_label.pack()
-
+    
     # Configure the ttk style for a dark theme
     style = ttk.Style()
     style.theme_use('clam')  # 'clam' is generally easier to customize
@@ -212,10 +212,6 @@ def create_gui():
     create_scale(root, "S_High", 1, 255, 255, on_high_s_change)
     create_scale(root, "V_Low", 1, 255, 1, on_low_v_change)
     create_scale(root, "V_High", 1, 255, 255, on_high_v_change)
-
-    # Spacer
-    spacer = ttk.Frame(root, height=20, style="Outline.TFrame")
-    spacer.pack(fill='x', expand=False, pady=10)
 
     # Creating scales for P-Control tuning (speed and angle sensitivity)
     create_scale(root, "Speed (%)", 0, 100, 0, on_speed_change)
