@@ -321,6 +321,7 @@ def update():
     hsv_low = np.array([H_low, S_low, V_low], np.uint8)
     hsv_high = np.array([H_high, S_high, V_high], np.uint8)
     mask = cv.inRange(hsv_image, hsv_low, hsv_high)
+    mask = cv.bitwise_and(img, img, mask=mask)
     cv.imshow('mask', mask)
 
     # Update contour function
