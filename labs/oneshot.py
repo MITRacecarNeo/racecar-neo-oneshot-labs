@@ -7,13 +7,14 @@ File Name: oneshot.py
 
 Title: RACECAR Neo OneShot - Unified Autonomy Lab
 
-Purpose: Combines Line Following, Wall Following, and Car Tracking into a single
+Purpose: Combines Line Following, Wall Following, Car Tracking, and Safety Stop into a single
 immersive application with a modern UI. Users can toggle between autonomy modes,
-tune parameters in real-time, and see a quantitative performance score.
+tune parameters in real-time, and see a live P-control error chart.
 
 Controls:
     Right Trigger   = Drive (dead man's switch)
     A / B / Y       = Switch mode: Line Follow / Wall Follow / Car Track
+    Safety Stop     = Available via GUI / Web Dashboard
     GUI sliders     = Tune parameters in real-time
 
 Notes:
@@ -27,14 +28,52 @@ Notes:
 
 import sys
 import os
-import socket as _socket
-import json as _json
-import yaml as _yaml
-import cv2 as cv
-import numpy as np
 import math
 import time
 import threading
+
+print("[boot] 1/8  stdlib loaded", flush=True)
+
+import socket as _socket
+import json as _json
+
+# yaml is optional — only used for color save/load
+try:
+    import yaml as _yaml
+except ImportError:
+    _yaml = None
+    print("[boot]       pyyaml not installed — color save/load disabled")
+
+print("[boot] 2/8  loading numpy …", flush=True)
+import numpy as np
+
+print("[boot] 3/8  loading OpenCV …", flush=True)
+import cv2 as cv
+
+print("[boot] 4/8  OpenCV OK", flush=True)
+
+# Pillow for safe JPEG encoding (avoids ARM/NEON segfaults in cv.imencode)
+HAS_PILLOW = False
+try:
+    from PIL import Image as _PILImage
+    from io import BytesIO as _BytesIO
+    HAS_PILLOW = True
+except ImportError:
+    pass
+
+# Matplotlib — disabled by default; use the safe OpenCV chart renderer.
+# Set  RACECAR_MPL=1  env-var to enable (only useful on desktop).
+HAS_MATPLOTLIB = False
+if os.environ.get("RACECAR_MPL", "0") == "1":
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        HAS_MATPLOTLIB = True
+        print("[boot]       matplotlib enabled (Agg backend)")
+    except Exception as _mpl_err:
+        print(f"[boot]       matplotlib unavailable ({_mpl_err!r})")
 
 # ---------------------------------------------------------------------------
 # Display-availability detection (MUST run before create_racecar so we can
@@ -77,10 +116,14 @@ if HAS_DISPLAY:
     except ImportError:
         print(">> tkinter not available — using OpenCV dashboard instead")
 
+print("[boot] 5/8  loading racecar library …", flush=True)
+
 # RACECAR library
-sys.path.insert(0, "../../../library")
+sys.path.insert(0, "../library")
 import racecar_core
 import racecar_utils as rc_utils
+
+print("[boot] 6/8  racecar library OK", flush=True)
 
 # PyCoral for car tracking (optional - ML object detection)
 try:
@@ -92,18 +135,22 @@ try:
 except ImportError:
     PYCORAL_AVAILABLE = False
 
+print("[boot] 7/8  creating racecar …", flush=True)
+
 ########################################################################################
 # Create RACECAR
 ########################################################################################
 
 rc = racecar_core.create_racecar()
 
+print("[boot] 8/8  racecar ready", flush=True)
+
 ########################################################################################
-# Neobotics Color Palette
+# Color Palette
 ########################################################################################
 
 class Colors:
-    """Dark theme color palette inspired by neobotics branding."""
+    """Dark theme color palette for the RACECAR Neo dashboard."""
     # Backgrounds
     BG_DARK      = "#0A0A0F"
     BG_PANEL     = "#111118"
@@ -111,7 +158,7 @@ class Colors:
     BG_HOVER     = "#252535"
     BG_ACTIVE    = "#303045"
 
-    # Neobotics brand colors
+    # Brand colors
     NEO_RED      = "#FF2D20"
     NEO_ORANGE   = "#FF6B35"
     NEO_AMBER    = "#FFA726"
@@ -128,10 +175,9 @@ class Colors:
     MID_GRAY     = "#4A4A5A"
     DARK_GRAY    = "#2A2A3A"
 
-    # Score gradient
-    SCORE_HIGH   = "#00E676"
-    SCORE_MID    = "#FFD740"
-    SCORE_LOW    = "#FF2D20"
+    # Chart accent
+    CHART_LINE   = "#00D4FF"
+    CHART_ZERO   = "#FF2D20"
 
 
 ########################################################################################
@@ -150,18 +196,24 @@ class AppState:
     speed = 0.0
     angle = 0.0
 
-    # Performance
-    score = 0.0
+    # Error tracking (signed errors for P-control chart)
     error_history: list = []
     HIST_LEN = 300
+    chart_image = None         # pre-rendered chart (numpy BGR)
 
     # -- Line Following -------------------------------------------------------
     lf_speed          = 50       # percent
     lf_angle_sens     = 50       # percent
-    # Line-follow sub-mode: "standard" (hue+SV picker) | "advanced" (full HSV ranges)
+    # Line-follow sub-mode: "standard" (single color) | "advanced" (full HSV ranges)
     lf_sub_mode       = "standard"
+
+    # Standard-mode: single color tuning (no named colors)
+    lf_hue_low        = 0        # low end of hue range (0-179)
+    lf_hue_high       = 20       # high end of hue range (0-179)
+    lf_saturation     = 120      # minimum saturation threshold (0-255)
+
     # Color priority: ordered list of color keys — tries top-to-bottom,
-    # follows the first color that has a valid contour.
+    # follows the first color that has a valid contour.  (Advanced mode only)
     lf_color_priority = ["red", "blue", "green", "orange", "yellow", "purple"]
     # Per-color enable/disable: disabled colors are skipped entirely.
     lf_color_enabled  = None    # populated in start(): {color_key: True/False}
@@ -173,7 +225,7 @@ class AppState:
     # Key → {"H_low", "H_high", "S_low", "S_high", "V_low", "V_high"}
     lf_color_hsv      = None    # populated in start() from LINE_COLORS defaults
 
-    # Standard-mode picker values per color:
+    # Standard-mode picker values per color (Advanced mode only):
     #   hue      = center hue (0-179)
     #   sv_pos   = combined S/V slider position (0-100)
     #              0 → (S=0,V=255) desaturated  |  50 → (S=255,V=255) pure  |  100 → (S=255,V=0) dark
@@ -188,6 +240,14 @@ class AppState:
     wf_use_avg       = False    # True = average distance, False = closest point
     wf_left_dist     = 0.0
     wf_right_dist    = 0.0
+
+    # -- Safety Stop ------------------------------------------------------------
+    ss_speed         = 50       # driving speed percent (0-100)
+    ss_distance      = 100     # safety threshold distance in cm
+    ss_kp            = 50      # braking aggressiveness (0-100): higher = harder stop
+    ss_sensitivity   = 50      # sensitivity percent (0-100)
+    ss_fwd_dist      = 0.0     # measured forward distance (cm) — display only
+    ss_stopped       = False   # whether safety stop is currently engaged
 
     # -- Car Tracking ---------------------------------------------------------
     ct_speed         = 70       # percent
@@ -222,6 +282,7 @@ class AppState:
     ctrl_lj          = (0.0, 0.0)
     ctrl_rj          = (0.0, 0.0)
     _physics_ok      = None   # None = untested, True = works, False = disabled
+    _json_state      = b"{}"  # pre-serialized JSON for web dashboard (built in main loop)
 
 
 # Contour detection constants
@@ -231,9 +292,10 @@ MIN_CONTOUR_AREA = 30
 state = AppState()
 
 MODE_NAMES = {
-    "line_follow": "LINE FOLLOWING",
-    "wall_follow": "WALL FOLLOWING",
-    "car_track":   "CAR TRACKING",
+    "line_follow":  "LINE FOLLOWING",
+    "wall_follow":  "WALL FOLLOWING",
+    "car_track":    "CAR TRACKING",
+    "safety_stop":  "SAFETY STOP",
 }
 
 # ---- Line-following color definitions (HSV ranges) ----
@@ -453,26 +515,125 @@ def _draw_lidar_arc(image, radius, window, color, max_range):
         cv.line(image, (x1, y1), (x2, y2), color, 1)
 
 
-def calculate_score():
+########################################################################################
+# Live Error Chart Renderer
+########################################################################################
+
+class _ErrorChartRenderer:
+    """Renders a live P-control error chart.
+
+    Uses matplotlib (Agg backend) when available, falls back to OpenCV drawing.
+    Optimised for real-time: pre-creates artists, caches the rendered image,
+    and throttles re-draws to ~10 Hz.
     """
-    Return a 0-100 score.  Higher = better tuning / less error.
-    Uses the trailing 60 samples (~1 second at 60 FPS).
-    """
-    if len(state.error_history) < 5:
-        return 0.0
 
-    recent = state.error_history[-60:]
-    avg_error = float(np.mean(recent))
+    def __init__(self, width=400, height=190):
+        self._w, self._h = width, height
+        self._tick = 0
+        self._cached = np.zeros((height, width, 3), np.uint8)
 
-    if state.mode == "line_follow":
-        max_err = rc.camera.get_width() / 2
-    elif state.mode == "wall_follow":
-        max_err = 200.0
-    else:
-        max_err = rc.camera.get_width() / 2
+        if not HAS_MATPLOTLIB:
+            self._fallback = True
+            return
 
-    normalised = min(avg_error / max(max_err, 1), 1.0)
-    return round(max(0, (1.0 - normalised) * 100), 1)
+        self._fallback = False
+        dpi = 80
+        self.fig = Figure(figsize=(width / dpi, height / dpi), dpi=dpi)
+        self.fig.patch.set_facecolor('#0A0A0F')
+        self.canvas = FigureCanvasAgg(self.fig)
+        self.ax = self.fig.add_subplot(111)
+        self.ax.set_facecolor('#111118')
+        for spine in self.ax.spines.values():
+            spine.set_color('#2A2A3A')
+        self.ax.tick_params(colors='#9999AA', labelsize=7)
+        self.ax.set_xlabel('Samples', fontsize=8, color='#9999AA', labelpad=2)
+        self.ax.set_ylabel('Error', fontsize=8, color='#9999AA', labelpad=2)
+        self.ax.grid(True, alpha=0.15, color='#4A4A5A')
+        self.ax.axhline(y=0, color='#FF2D20', linewidth=0.8, linestyle='--', alpha=0.6)
+        self.line, = self.ax.plot([], [], color='#00D4FF', linewidth=1.2, alpha=0.9)
+        self.fill_coll = None
+        self.fig.tight_layout(pad=1.2)
+
+    def render(self, error_history):
+        self._tick += 1
+        if self._tick % 6 != 0 and self._cached is not None:
+            return self._cached
+        if not error_history or len(error_history) < 2:
+            return self._cached
+        if self._fallback:
+            return self._render_cv(error_history)
+
+        try:
+            # Rolling window: always show HIST_LEN slots, data right-aligned
+            hist_len = state.HIST_LEN
+            n = len(error_history)
+            y = np.array(error_history, dtype=float)
+            x = np.arange(hist_len - n, hist_len)  # right-aligned within window
+            self.line.set_data(x, y)
+
+            if self.fill_coll is not None:
+                self.fill_coll.remove()
+            self.fill_coll = self.ax.fill_between(x, 0, y, alpha=0.12, color='#00D4FF')
+
+            self.ax.set_xlim(0, hist_len)  # fixed window width
+            ymax = max(float(np.abs(y).max()), 1)
+            self.ax.set_ylim(-ymax * 1.15, ymax * 1.15)
+
+            self.canvas.draw()
+            buf = np.frombuffer(self.canvas.buffer_rgba(), dtype=np.uint8)
+            w, h = self.canvas.get_width_height()
+            img = buf.reshape((h, w, 4))
+            self._cached = cv.cvtColor(img, cv.COLOR_RGBA2BGR)
+        except Exception:
+            # matplotlib crashed at runtime — permanently fall back to OpenCV
+            self._fallback = True
+            return self._render_cv(error_history)
+        return self._cached
+
+    def _render_cv(self, error_history):
+        """Fallback chart drawn with OpenCV when matplotlib is missing.
+        Rolling: fixed window width, data right-aligned."""
+        w, h = self._w, self._h
+        img = np.full((h, w, 3), (15, 10, 10), dtype=np.uint8)
+        y_vals = list(error_history)
+        if len(y_vals) < 2:
+            return img
+        ymax = max(max(abs(v) for v in y_vals), 1)
+        mid = h // 2
+        hist_len = state.HIST_LEN
+        # Zero reference line
+        cv.line(img, (0, mid), (w, mid), (32, 45, 255), 1)
+        # Error curve — rolling window, right-aligned
+        n = len(y_vals)
+        offset = hist_len - n  # empty slots on the left
+        px_per_slot = (w - 1) / max(hist_len - 1, 1)
+        pts = []
+        for i, val in enumerate(y_vals):
+            px = int((offset + i) * px_per_slot)
+            py = int(mid - (val / ymax) * (mid - 8))
+            py = max(2, min(h - 2, py))
+            pts.append((px, py))
+        for i in range(len(pts) - 1):
+            cv.line(img, pts[i], pts[i + 1], (255, 212, 0), 1)
+        cv.putText(img, "Error", (4, 14), cv.FONT_HERSHEY_SIMPLEX, 0.35,
+                   (153, 153, 170), 1, cv.LINE_AA)
+        cv.putText(img, "0", (4, mid - 3), cv.FONT_HERSHEY_SIMPLEX, 0.3,
+                   (32, 45, 255), 1, cv.LINE_AA)
+        self._cached = img
+        return img
+
+
+_chart_renderer = None
+
+
+def _get_chart_image():
+    """Return the current error chart as a numpy BGR image."""
+    global _chart_renderer
+    if _chart_renderer is None:
+        _chart_renderer = _ErrorChartRenderer()
+    img = _chart_renderer.render(state.error_history)
+    state.chart_image = img
+    return img
 
 
 ########################################################################################
@@ -499,6 +660,8 @@ def _switch_mode(mode, from_main_thread=True):
     state.ct_prev_error = 0
     state.ct_integral = 0
     state.ct_last_time = time.time()
+    state.ss_fwd_dist = 0.0
+    state.ss_stopped = False
 
     name = MODE_NAMES.get(mode, "???")
     print(f">> Mode: {name}")
@@ -554,36 +717,47 @@ def update_line_follow():
     best_contour = None
     best_color_key = None
 
-    # Only consider enabled colors
-    enabled = state.lf_color_enabled or {}
-    active_priority = [k for k in state.lf_color_priority if enabled.get(k, True)]
+    if state.lf_sub_mode == "standard":
+        # ---- Standard mode: single color defined by Color range + Brightness ----
+        h_lo = int(max(0, min(179, state.lf_hue_low)))
+        h_hi = int(max(0, min(179, state.lf_hue_high)))
+        if h_lo > h_hi:
+            h_lo, h_hi = h_hi, h_lo
+        sat = state.lf_saturation
+        hsv_lo = (h_lo, sat, 60)
+        hsv_hi = (h_hi, 255, 255)
 
-    for color_key in active_priority:
-        hsv_lo, hsv_hi = _get_color_hsv(color_key)
-
-        # Contour detection on the cropped (full-res) image
-        if best_contour is None and cropped is not None:
+        if cropped is not None:
             contours = rc_utils.find_contours(cropped, hsv_lo, hsv_hi)
             contour = rc_utils.get_largest_contour(contours, MIN_CONTOUR_AREA)
             if contour is not None:
                 best_contour = contour
-                best_color_key = color_key
+                best_color_key = "__single__"
+    else:
+        # ---- Advanced mode: multi-color priority ----
+        enabled = state.lf_color_enabled or {}
+        active_priority = [k for k in state.lf_color_priority if enabled.get(k, True)]
+
+        for color_key in active_priority:
+            hsv_lo_c, hsv_hi_c = _get_color_hsv(color_key)
+            if best_contour is None and cropped is not None:
+                contours = rc_utils.find_contours(cropped, hsv_lo_c, hsv_hi_c)
+                contour = rc_utils.get_largest_contour(contours, MIN_CONTOUR_AREA)
+                if contour is not None:
+                    best_contour = contour
+                    best_color_key = color_key
+
+        # HSV range for the processing mask
+        if best_color_key is not None:
+            hsv_lo, hsv_hi = _get_color_hsv(best_color_key)
+        else:
+            top_key = active_priority[0] if active_priority else "red"
+            hsv_lo, hsv_hi = _get_color_hsv(top_key)
 
     # ---- Build the processing image (mask view) ----
-    # Like the old hsv_tuner: show the mask for the active color so the user
-    # can see exactly what the camera is picking up and fine-tune HSV.
-    if best_color_key is not None:
-        hsv_lo, hsv_hi = _get_color_hsv(best_color_key)
-    else:
-        # No match — show the mask for the first enabled color so the
-        # user can still tune it while seeing the camera feed.
-        top_key = active_priority[0] if active_priority else "red"
-        hsv_lo, hsv_hi = _get_color_hsv(top_key)
-
     lo_arr = np.array(hsv_lo, np.uint8)
     hi_arr = np.array(hsv_hi, np.uint8)
     mask = cv.inRange(hsv_small, lo_arr, hi_arr)
-    # Classic technique: bitwise_and reveals only the masked color region
     proc = cv.bitwise_and(small, small, mask=mask)
 
     # ---- Act on the highest-priority match ----
@@ -597,7 +771,7 @@ def update_line_follow():
         kp = -(2 / setpoint) * (state.lf_angle_sens / 100) * 2
         state.angle = rc_utils.clamp(kp * error, -1, 1)
 
-        state.error_history.append(abs(error))
+        state.error_history.append(error)
         if len(state.error_history) > state.HIST_LEN:
             state.error_history.pop(0)
 
@@ -624,11 +798,16 @@ def update_line_follow():
         state.contour_area = 0
         state.lf_active_color = None
 
-    # Overlay a small label showing which color is being tracked
-    shown_key = best_color_key or (state.lf_color_priority[0] if state.lf_color_priority else "none")
-    label_text = f"Mask: {shown_key.upper()}"
-    if best_color_key:
-        label_text += "  [TRACKING]"
+    # Overlay a small label showing tracking status
+    if state.lf_sub_mode == "standard":
+        label_text = f"C:{state.lf_hue_low}-{state.lf_hue_high} B:{state.lf_saturation}"
+        if best_color_key:
+            label_text += "  [TRACKING]"
+    else:
+        shown_key = best_color_key or (state.lf_color_priority[0] if state.lf_color_priority else "none")
+        label_text = f"Mask: {shown_key.upper()}"
+        if best_color_key:
+            label_text += "  [TRACKING]"
     cv.putText(proc, label_text, (8, 18), cv.FONT_HERSHEY_SIMPLEX, 0.45,
                (0, 255, 255), 1, cv.LINE_AA)
 
@@ -699,7 +878,7 @@ def update_wall_follow():
     state.angle = rc_utils.clamp(kp_now * error, -1, 1)
     state.speed = state.wf_speed / 100
 
-    state.error_history.append(abs(error))
+    state.error_history.append(error)
     if len(state.error_history) > state.HIST_LEN:
         state.error_history.pop(0)
 
@@ -796,7 +975,7 @@ def update_car_track():
         state.angle = float(np.clip((p + i + d) / 100, -1.0, 1.0))
         state.speed = state.ct_speed / 100
 
-        state.error_history.append(abs(error))
+        state.error_history.append(error)
         if len(state.error_history) > state.HIST_LEN:
             state.error_history.pop(0)
 
@@ -810,19 +989,114 @@ def update_car_track():
 
 
 ########################################################################################
+# Autonomy Mode: SAFETY STOP
+########################################################################################
+
+def update_safety_stop():
+    """
+    LIDAR-based forward safety stop.
+
+    The car drives at a set speed and is steered via the left joystick.
+    When the forward LIDAR distance falls below the safety threshold, the
+    car brakes proportionally based on Kp (braking aggressiveness).
+
+    Tunable parameters:
+        Speed %                    → driving speed (0-100 maps to 0.0-1.0)
+        Safety Threshold Dist (cm) → distance below which braking engages
+        Braking Kp %               → aggressiveness of deceleration (0-100)
+        Sensitivity %              → width of the forward LIDAR scan cone
+    Steering:
+        Left joystick X-axis       → manual steering (-1 left, +1 right)
+    """
+    scan = rc.lidar.get_samples()
+
+    image = rc.camera.get_color_image()
+    if image is not None:
+        state.raw_image = image.copy()
+
+    # ---- Measure forward distance ----
+    # Sensitivity controls the scan window half-width: 0% = ±1°, 100% = ±45°
+    half_angle = max(1, int(state.ss_sensitivity * 45 / 100))
+    fwd_dist = rc_utils.get_lidar_average_distance(scan, 0, half_angle * 2)
+    if fwd_dist <= 0:
+        fwd_dist = 9999  # invalid reading → treat as far away
+    state.ss_fwd_dist = fwd_dist
+
+    # ---- Steering from left joystick ----
+    try:
+        joy_x = rc.controller.get_joystick(rc.controller.Joystick.LEFT)[0]
+    except Exception:
+        joy_x = 0.0
+
+    # ---- Decide: drive or brake ----
+    threshold = state.ss_distance
+    base_speed = state.ss_speed / 100
+    kp = state.ss_kp / 100  # 0.0-1.0
+
+    if fwd_dist < threshold:
+        # Proportional braking: the closer to the obstacle, the harder the brake.
+        # ratio = 1.0 at threshold edge → 0.0 at distance=0
+        ratio = max(0.0, fwd_dist / max(threshold, 1))
+        # Kp controls aggressiveness via an exponential curve:
+        #   kp=0   → exponent=1  (linear coast-down, gentle)
+        #   kp=0.5 → exponent=4  (aggressive curve)
+        #   kp=1.0 → exponent=7  (very steep, near-instant stop)
+        exponent = 1.0 + kp * 6.0
+        state.speed = base_speed * (ratio ** exponent)
+        state.ss_stopped = state.speed < 0.01
+        if state.ss_stopped:
+            state.speed = 0.0
+    else:
+        state.ss_stopped = False
+        state.speed = base_speed
+
+    state.angle = rc_utils.clamp(joy_x, -1, 1)
+
+    # Error for chart: distance to threshold (negative = inside danger zone)
+    error = fwd_dist - threshold
+    state.error_history.append(error)
+    if len(state.error_history) > state.HIST_LEN:
+        state.error_history.pop(0)
+
+    # ---- Drive the car ----
+    if rc.controller.get_trigger(rc.controller.Trigger.RIGHT) > 0:
+        rc.drive.set_speed_angle(state.speed, state.angle)
+    else:
+        rc.drive.set_speed_angle(0, 0)
+
+    # Show LIDAR on hardware display
+    rc.display.show_lidar(scan, max_range=500)
+
+    # ---- LIDAR visualization for GUI ----
+    fwd_angle = 0
+    highlighted = [(fwd_angle, fwd_dist)]
+    lidar_img = generate_lidar_image(
+        scan, radius=128, max_range=500,
+        highlighted=highlighted,
+        left_window=(360 - half_angle, 360),
+        right_window=(0, half_angle),
+    )
+    status_text = "STOPPED" if state.ss_stopped else "DRIVING"
+    status_color = (0, 0, 255) if state.ss_stopped else (0, 255, 0)
+    cv.putText(lidar_img, f"Fwd:{fwd_dist:.0f}cm  Thr:{threshold}cm", (10, 20),
+               cv.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+    cv.putText(lidar_img, status_text, (85, 245),
+               cv.FONT_HERSHEY_SIMPLEX, 0.6, status_color, 2)
+
+    state.processed_image = lidar_img
+
+
+########################################################################################
 # Dot Matrix Display
 ########################################################################################
 
 def update_dot_matrix():
-    """Push mode-specific info to the physical dot-matrix LED display."""
-    score = calculate_score()
-    state.score = score
-
-    labels = {"line_follow": "LF", "wall_follow": "WF", "car_track": "CT"}
+    """Push mode info to the physical dot-matrix LED display."""
+    labels = {"line_follow": "LF", "wall_follow": "WF", "car_track": "CT", "safety_stop": "SS"}
     tag = labels.get(state.mode, "??")
 
     try:
-        rc.display.show_text(f"{tag} {int(score)}%")
+        rc.display.show_text(f"{tag}")
     except Exception:
         pass
 
@@ -849,9 +1123,10 @@ _BGR = {
 }
 
 _BGR_MODE = {
-    "line_follow": _BGR["green"],
-    "wall_follow": _BGR["cyan"],
-    "car_track":   _BGR["neo_orange"],
+    "line_follow":  _BGR["green"],
+    "wall_follow":  _BGR["cyan"],
+    "car_track":    _BGR["neo_orange"],
+    "safety_stop":  _BGR["neo_red"],
 }
 
 _TUNER_WIN = "RACECAR Neo Tuner"
@@ -882,28 +1157,18 @@ def _cv_setup_tuner(mode):
     cv.resizeWindow(_TUNER_WIN, 480, 30)
 
     if mode == "line_follow":
-        # Speed + Steer + (basic: Hue + SV for first enabled color)
+        if state.lf_sub_mode == "standard":
+            # Standard mode: Color Low/High range + Brightness
+            cv.createTrackbar("Color Low",      _TUNER_WIN, state.lf_hue_low,     179,
+                              lambda v: setattr(state, "lf_hue_low", v))
+            cv.createTrackbar("Color High",     _TUNER_WIN, state.lf_hue_high,    179,
+                              lambda v: setattr(state, "lf_hue_high", v))
+            cv.createTrackbar("Brightness",     _TUNER_WIN, state.lf_saturation,  255,
+                              lambda v: setattr(state, "lf_saturation", v))
         cv.createTrackbar("Speed %",  _TUNER_WIN, state.lf_speed,    100,
                           lambda v: setattr(state, "lf_speed", v))
-        cv.createTrackbar("Steer %",  _TUNER_WIN, state.lf_angle_sens, 100,
+        cv.createTrackbar("Sensitivity %",  _TUNER_WIN, state.lf_angle_sens, 100,
                           lambda v: setattr(state, "lf_angle_sens", v))
-        # In standard mode, add Hue + SV trackbars for the first enabled color
-        if state.lf_sub_mode == "standard":
-            enabled = state.lf_color_enabled or {}
-            first_key = next((k for k in state.lf_color_priority if enabled.get(k, True)), None)
-            if first_key and state.lf_basic_hue and state.lf_basic_sv:
-                hue = state.lf_basic_hue.get(first_key, 90)
-                sv = state.lf_basic_sv.get(first_key, 50)
-                def _set_hue(v, k=first_key):
-                    if state.lf_basic_hue is not None:
-                        state.lf_basic_hue[k] = v
-                        _apply_basic_to_hsv(k)
-                def _set_sv(v, k=first_key):
-                    if state.lf_basic_sv is not None:
-                        state.lf_basic_sv[k] = v
-                        _apply_basic_to_hsv(k)
-                cv.createTrackbar(f"Hue ({first_key})", _TUNER_WIN, hue, 179, _set_hue)
-                cv.createTrackbar(f"SV  ({first_key})", _TUNER_WIN, sv,  100, _set_sv)
 
     elif mode == "wall_follow":
         cv.createTrackbar("Speed %",           _TUNER_WIN, state.wf_speed,       100,
@@ -929,17 +1194,33 @@ def _cv_setup_tuner(mode):
         cv.createTrackbar("Conf %",  _TUNER_WIN, int(state.ct_score_thresh * 100), 100,
                           lambda v: setattr(state, "ct_score_thresh", max(v, 10) / 100.0))
 
+    elif mode == "safety_stop":
+        cv.createTrackbar("Speed %",           _TUNER_WIN, state.ss_speed,       100,
+                          lambda v: setattr(state, "ss_speed", v))
+        cv.createTrackbar("Threshold (cm)",    _TUNER_WIN, state.ss_distance,    500,
+                          lambda v: setattr(state, "ss_distance", max(v, 5)))
+        cv.createTrackbar("Braking Kp %",     _TUNER_WIN, state.ss_kp,          100,
+                          lambda v: setattr(state, "ss_kp", v))
+        cv.createTrackbar("Sensitivity %",     _TUNER_WIN, state.ss_sensitivity, 100,
+                          lambda v: setattr(state, "ss_sensitivity", v))
+
     # Tiny placeholder so the window is visible
     cv.imshow(_TUNER_WIN, np.zeros((1, 480, 3), np.uint8))
 
 
 def _cv_compose_dashboard():
-    """Compose a 4-panel dashboard as a single OpenCV image."""
-    W, H   = 880, 530
+    """Compose a 4-panel dashboard as a single OpenCV image.
+
+    Layout:
+        [Header                                      ]
+        [Camera image         |  Processing image     ]
+        [Error Chart         |  Telemetry text       ]
+    """
+    W, H   = 880, 560
     IMG_W  = 425
-    IMG_H  = 290
+    IMG_H  = 250
     HDR_H  = 44
-    FTR_H  = H - HDR_H - IMG_H - 16
+    BTM_H  = H - HDR_H - IMG_H - 12
 
     dash = np.full((H, W, 3), _BGR["bg"], dtype=np.uint8)
     F = cv.FONT_HERSHEY_SIMPLEX
@@ -954,15 +1235,11 @@ def _cv_compose_dashboard():
     mode_name  = MODE_NAMES.get(state.mode, "???")
     cv.putText(dash, mode_name, (420, 30), F, 0.7, mode_color, 2, AA)
 
-    score = state.score
-    sc = _BGR["green"] if score >= 70 else (_BGR["yellow"] if score >= 35 else _BGR["neo_red"])
-    cv.putText(dash, f"Score: {score:.0f}/100", (710, 30), F, 0.6, sc, 2, AA)
-
-    # ---- Image panels ----
+    # ---- Top panels: image feeds ----
     y0 = HDR_H + 4
     x_l, x_r = 5, W // 2 + 3
 
-    cv.putText(dash, "Camera / LIDAR", (x_l + 2, y0 + 12), F, 0.35, _BGR["light_gray"], 1, AA)
+    cv.putText(dash, "Camera", (x_l + 2, y0 + 12), F, 0.35, _BGR["light_gray"], 1, AA)
     cv.putText(dash, "Processing",     (x_r + 2, y0 + 12), F, 0.35, _BGR["light_gray"], 1, AA)
 
     iy = y0 + 18
@@ -980,7 +1257,6 @@ def _cv_compose_dashboard():
     if state.processed_image is not None:
         try:
             proc = state.processed_image
-            # Handle both color and grayscale
             if len(proc.shape) == 2:
                 proc = cv.cvtColor(proc, cv.COLOR_GRAY2BGR)
             proc = cv.resize(proc, (IMG_W, ih))
@@ -990,66 +1266,80 @@ def _cv_compose_dashboard():
     else:
         cv.putText(dash, "No Processing", (x_r + 120, iy + ih // 2), F, 0.7, _BGR["mid_gray"], 2, AA)
 
-    # ---- Footer: Telemetry + Score bar ----
-    ftr_y = y0 + IMG_H + 4
-    cv.rectangle(dash, (0, ftr_y), (W, H), _BGR["panel"], -1)
-    cv.line(dash, (0, ftr_y), (W, ftr_y), _BGR["mid_gray"], 1)
+    # ---- Bottom row: Error chart (left) + Telemetry (right) ----
+    btm_y = y0 + IMG_H + 4
+    cv.rectangle(dash, (0, btm_y), (W, H), _BGR["panel"], -1)
+    cv.line(dash, (0, btm_y), (W, btm_y), _BGR["mid_gray"], 1)
 
-    # Read telemetry from cached state (never call rc.physics / rc.controller
-    # from here — cross-thread calls can corrupt the racecar protocol).
+    # -- Bottom-left: error chart --
+    chart_w, chart_h = IMG_W, BTM_H - 8
+    cv.putText(dash, "P-Control Error", (x_l + 2, btm_y + 12), F, 0.35, _BGR["light_gray"], 1, AA)
+    chart_img = _get_chart_image()
+    if chart_img is not None:
+        try:
+            resized = cv.resize(chart_img, (chart_w, chart_h - 16))
+            cy = btm_y + 16
+            dash[cy:cy + chart_h - 16, x_l:x_l + chart_w] = resized
+        except Exception:
+            pass
+
+    # -- Bottom-right: compact telemetry --
+    cv.putText(dash, "Telemetry", (x_r + 2, btm_y + 12), F, 0.35, _BGR["light_gray"], 1, AA)
+
     a = state.imu_accel
     w = state.imu_gyro
     lt = state.ctrl_lt
     rt = state.ctrl_rt
     lj = state.ctrl_lj
 
-    ty = ftr_y + 18
+    ty = btm_y + 28
     cv.putText(dash,
-        f"IMU  Accel X:{a[0]:+6.2f} Y:{a[1]:+6.2f} Z:{a[2]:+6.2f}   "
-        f"Gyro X:{w[0]:+6.2f} Y:{w[1]:+6.2f} Z:{w[2]:+6.2f}",
-        (10, ty), F, 0.37, _BGR["cyan"], 1, AA)
-
-    ty += 18
+        f"Accel X:{a[0]:+5.1f} Y:{a[1]:+5.1f} Z:{a[2]:+5.1f}",
+        (x_r + 4, ty), F, 0.33, _BGR["cyan"], 1, AA)
+    ty += 16
     cv.putText(dash,
-        f"CTRL  LT:{lt:.2f}  RT:{rt:.2f}  Stick:({lj[0]:+.2f},{lj[1]:+.2f})  "
+        f"Gyro  X:{w[0]:+5.1f} Y:{w[1]:+5.1f} Z:{w[2]:+5.1f}",
+        (x_r + 4, ty), F, 0.33, _BGR["cyan"], 1, AA)
+    ty += 16
+    cv.putText(dash,
+        f"LT:{lt:.2f}  RT:{rt:.2f}  Stick:({lj[0]:+.1f},{lj[1]:+.1f})",
+        (x_r + 4, ty), F, 0.33, _BGR["cyan"], 1, AA)
+    ty += 16
+    cv.putText(dash,
         f"Speed:{state.speed:+.3f}  Angle:{state.angle:+.3f}",
-        (10, ty), F, 0.37, _BGR["cyan"], 1, AA)
+        (x_r + 4, ty), F, 0.33, _BGR["cyan"], 1, AA)
 
-    # Mode-specific data line
+    # Mode-specific line
     ty += 18
     if state.mode == "line_follow":
         ctr = state.contour_center
-        active = state.lf_active_color or "none"
-        prio = " > ".join(c.capitalize() for c in state.lf_color_priority)
-        info = (f"Priority:[{prio}]  Tracking:{active.capitalize()}  "
-                f"Contour:{f'({ctr[0]},{ctr[1]})' if ctr else 'None'}  "
-                f"Area:{state.contour_area}")
+        if state.lf_sub_mode == "standard":
+            info = (f"C:{state.lf_hue_low}-{state.lf_hue_high} B:{state.lf_saturation}  "
+                    f"Ctr:{f'({ctr[0]},{ctr[1]})' if ctr else 'None'}")
+        else:
+            active = state.lf_active_color or "none"
+            info = (f"Tracking:{active.capitalize()}  "
+                    f"Ctr:{f'({ctr[0]},{ctr[1]})' if ctr else 'None'}")
     elif state.mode == "wall_follow":
         dirl = "Side" if state.wf_scan_dir >= 80 else ("Diag" if state.wf_scan_dir >= 45 else "Fwd")
         avg_tag = "AVG" if state.wf_use_avg else "CLOSEST"
-        info = (f"L:{state.wf_left_dist:.0f}cm  R:{state.wf_right_dist:.0f}cm  "
-                f"\u0394:{state.wf_right_dist - state.wf_left_dist:.0f}cm  "
-                f"Dir:{state.wf_scan_dir}\u00b0[{dirl}] \u00b1{state.wf_window}\u00b0 {avg_tag}")
-    else:
+        info = (f"L:{state.wf_left_dist:.0f}cm R:{state.wf_right_dist:.0f}cm  "
+                f"\u0394:{state.wf_right_dist - state.wf_left_dist:.0f}cm {avg_tag}")
+    elif state.mode == "car_track":
         info = (f"Kp:{state.ct_kp:.1f} Ki:{state.ct_ki:.1f} Kd:{state.ct_kd:.1f}  "
                 f"ML:{'OK' if PYCORAL_AVAILABLE and state.interpreter else 'N/A'}")
-    cv.putText(dash, info, (10, ty), F, 0.37, _BGR["yellow"], 1, AA)
+    elif state.mode == "safety_stop":
+        status = "STOPPED" if state.ss_stopped else "DRIVING"
+        info = (f"Fwd:{state.ss_fwd_dist:.0f}cm  Thr:{state.ss_distance}cm  Kp:{state.ss_kp}%  [{status}]")
+    else:
+        info = ""
+    cv.putText(dash, info, (x_r + 4, ty), F, 0.33, _BGR["yellow"], 1, AA)
 
-    # Score bar
-    ty += 22
-    bar_x0, bar_x1 = 10, 660
-    bar_h = 12
-    cv.rectangle(dash, (bar_x0, ty), (bar_x1, ty + bar_h), _BGR["dark_gray"], -1)
-    fill = int((bar_x1 - bar_x0) * score / 100)
-    if fill > 0:
-        cv.rectangle(dash, (bar_x0, ty), (bar_x0 + fill, ty + bar_h), sc, -1)
-    cv.putText(dash, f"{score:.0f}%", (bar_x1 + 8, ty + 10), F, 0.4, sc, 1, AA)
-
-    # Controls hint
-    ty += 22
+    # Controls hint at very bottom
+    ty += 20
     cv.putText(dash,
-        "A = Save/Line   B = Wall Follow   Y = Car Track   |   Hold RT to Drive",
-        (10, ty), F, 0.37, _BGR["light_gray"], 1, AA)
+        "A=Line  B=Wall  Y=Car | RT=Drive",
+        (x_r + 4, ty), F, 0.33, _BGR["light_gray"], 1, AA)
 
     return dash
 
@@ -1076,6 +1366,17 @@ class _ThreadedHTTPServer(_socketserver.ThreadingMixIn, _HTTPServer):
     """HTTP server that handles each request in a new thread.
     Required for MJPEG streaming (long-lived connections) alongside API calls."""
     daemon_threads = True
+    allow_reuse_address = True
+    request_queue_size = 16  # allow more pending connections for busy polling
+
+    def handle_error(self, request, client_address):
+        """Silently ignore BrokenPipeError / ConnectionResetError —
+        these are normal when a browser tab closes or WiFi hiccups."""
+        import sys
+        exc_type = sys.exc_info()[0]
+        if exc_type in (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+            return  # suppress — nothing to do
+        super().handle_error(request, client_address)
 
 _WEB_PORT = 8080
 
@@ -1085,9 +1386,11 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>RACECAR Neo · OneShot Lab</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<!-- No external font CDN — works offline on closed car networks -->
+<style>
+@font-face{font-family:'Inter';font-style:normal;font-weight:400 900;font-display:swap;src:local('Inter'),local('Inter-Regular')}
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:local('JetBrains Mono'),local('JetBrainsMono-Regular')}
+</style>
 <style>
 :root{
   --bg:#060609;--panel:#0D0D14;--surface:#14141E;--hover:#1E1E30;--active:#282842;
@@ -1111,7 +1414,7 @@ body{background:var(--bg);color:var(--white);font-family:'Inter',system-ui,-appl
 ::-webkit-scrollbar-thumb:hover{background:var(--lgray)}
 
 /* ---- Top Bar ---- */
-.topbar{display:flex;align-items:center;background:var(--panel);height:64px;padding:0 24px;gap:16px;border-bottom:1px solid var(--border);flex-shrink:0;position:relative;z-index:10}
+.topbar{display:flex;align-items:center;background:var(--panel);height:48px;padding:0 20px;gap:12px;border-bottom:1px solid var(--border);flex-shrink:0;position:relative;z-index:10}
 .topbar::after{content:'';position:absolute;bottom:-1px;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(255,45,32,.3),rgba(255,107,53,.2),transparent)}
 .logo{display:flex;align-items:baseline;gap:8px;flex-shrink:0}
 .logo-main{font-size:22px;font-weight:900;background:linear-gradient(135deg,var(--red),var(--orange));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;letter-spacing:-.5px}
@@ -1123,10 +1426,12 @@ body{background:var(--bg);color:var(--white);font-family:'Inter',system-ui,-appl
 .mode-btn.active[data-mode="line_follow"]{background:rgba(0,230,118,.12);color:var(--green);box-shadow:var(--glow-green)}
 .mode-btn.active[data-mode="wall_follow"]{background:rgba(0,212,255,.12);color:var(--cyan);box-shadow:var(--glow-cyan)}
 .mode-btn.active[data-mode="car_track"]{background:rgba(255,107,53,.12);color:var(--orange);box-shadow:var(--glow-orange)}
+.mode-btn.active[data-mode="safety_stop"]{background:rgba(255,45,32,.12);color:var(--red);box-shadow:var(--glow-red)}
 .mode-btn.active::after{content:'';position:absolute;bottom:-1px;left:20%;right:20%;height:2px;border-radius:1px}
 .mode-btn.active[data-mode="line_follow"]::after{background:var(--green)}
 .mode-btn.active[data-mode="wall_follow"]::after{background:var(--cyan)}
 .mode-btn.active[data-mode="car_track"]::after{background:var(--orange)}
+.mode-btn.active[data-mode="safety_stop"]::after{background:var(--red)}
 
 /* ---- Status Pill ---- */
 .status-area{display:flex;align-items:center;gap:16px;margin-left:16px}
@@ -1135,27 +1440,23 @@ body{background:var(--bg);color:var(--white);font-family:'Inter',system-ui,-appl
 .conn-dot.err{background:var(--red);box-shadow:0 0 6px rgba(255,45,32,.5)}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
 
-/* ---- Score Display ---- */
-.score-box{display:flex;flex-direction:column;align-items:flex-end;gap:0;min-width:100px}
-.score-label{font-size:10px;color:var(--lgray);text-transform:uppercase;letter-spacing:1.5px;font-weight:700}
-.score-val{font-size:40px;font-weight:900;line-height:1;letter-spacing:-2px;transition:color .3s}
-.score-bar-wrap{height:3px;background:var(--surface);flex-shrink:0;position:relative;overflow:hidden}
-.score-bar{height:100%;transition:width .4s ease,background .4s ease;position:relative}
-.score-bar::after{content:'';position:absolute;top:0;right:0;width:40px;height:100%;background:linear-gradient(90deg,transparent,rgba(255,255,255,.3))}
+/* ---- Chart Canvas ---- */
+.chart-wrap{position:relative;width:100%;flex:1;min-height:120px}
+.chart-wrap canvas{width:100%;height:100%;display:block;border-radius:var(--radius)}
 
 /* ---- Main Grid ---- */
-.main{flex:1;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:6px;padding:6px;min-height:0}
+.main{flex:1;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:7fr 3fr;gap:6px;padding:6px;min-height:0}
 
 /* ---- Panel Card ---- */
 .panel{background:var(--panel);border-radius:var(--radius-lg);overflow:hidden;display:flex;flex-direction:column;min-height:0;border:1px solid var(--border);transition:border-color .2s}
 .panel:hover{border-color:var(--border-light)}
-.panel-hdr{display:flex;align-items:center;gap:8px;padding:12px 16px 8px;flex-shrink:0}
+.panel-hdr{display:flex;align-items:center;gap:6px;padding:6px 12px 4px;flex-shrink:0}
 .panel-hdr-icon{width:6px;height:6px;border-radius:50%;flex-shrink:0}
 .panel-hdr-text{font-size:11px;font-weight:700;color:var(--lgray);text-transform:uppercase;letter-spacing:1.8px}
 
 /* ---- Image Panels ---- */
-.img-wrap{flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden;background:var(--surface);margin:0 8px 8px;border-radius:var(--radius);min-height:0;position:relative}
-.img-wrap img{max-width:100%;max-height:100%;object-fit:contain;display:block}
+.img-wrap{flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden;background:var(--surface);margin:0 4px 4px;border-radius:var(--radius);min-height:0;position:relative}
+.img-wrap img{width:100%;height:100%;object-fit:contain;display:block}
 .img-placeholder{color:var(--mgray);font-size:12px;font-weight:500;letter-spacing:.5px}
 .img-wrap::before{content:'';position:absolute;inset:0;border-radius:var(--radius);border:1px solid var(--border);pointer-events:none;z-index:1}
 
@@ -1221,6 +1522,19 @@ input[type=range]::-moz-range-thumb{width:16px;height:16px;border-radius:50%;bac
 .color-hsv-panel .slider-val{font-size:11px}
 .color-hsv-panel input[type=range]{height:3px}
 
+/* ---- Dual-Range Color Slider ---- */
+.hue-range-wrap{position:relative;height:28px;margin:6px 0 10px;user-select:none}
+.hue-range-track{position:absolute;left:0;right:0;top:10px;height:8px;border-radius:4px;background:linear-gradient(to right,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)}
+.hue-range-sel{position:absolute;top:10px;height:8px;background:rgba(255,255,255,.22);border:1px solid rgba(255,255,255,.5);border-radius:4px;pointer-events:none}
+.hue-range-thumb{position:absolute;top:5px;width:18px;height:18px;border-radius:50%;background:var(--white);border:2px solid var(--panel);box-shadow:0 0 0 1px rgba(255,255,255,.4),0 2px 6px rgba(0,0,0,.5);cursor:pointer;transform:translateX(-50%);z-index:2;transition:box-shadow .15s}
+.hue-range-thumb:hover{box-shadow:0 0 0 4px rgba(255,255,255,.15),0 2px 6px rgba(0,0,0,.5)}
+.hue-range-thumb:active{transform:translateX(-50%) scale(.92)}
+
+/* ---- SV Gradient Slider ---- */
+.sv-slider-wrap{position:relative;margin:2px 0 6px}
+.sv-slider-wrap input[type=range]{background:linear-gradient(to right,#fff,hsl(var(--sv-hue,0),100%,50%),#000);height:8px;border-radius:4px}
+.sv-slider-wrap .slider-val{font-size:12px}
+
 /* ---- Section Divider ---- */
 .tune-divider{height:1px;background:linear-gradient(90deg,transparent,var(--border),transparent);margin:10px 0}
 
@@ -1229,7 +1543,7 @@ input[type=range]::-moz-range-thumb{width:16px;height:16px;border-radius:50%;bac
 .toggle-btn{flex:1;padding:8px 0;border-radius:8px;font-family:inherit;font-size:12px;font-weight:700;cursor:pointer;transition:all .15s;letter-spacing:.3px}
 
 /* ---- Footer ---- */
-.footer{height:32px;display:flex;align-items:center;justify-content:center;gap:24px;font-size:10px;color:var(--mgray);background:var(--panel);flex-shrink:0;border-top:1px solid var(--border);letter-spacing:.5px;font-weight:500}
+.footer{height:24px;display:flex;align-items:center;justify-content:center;gap:24px;font-size:9px;color:var(--mgray);background:var(--panel);flex-shrink:0;border-top:1px solid var(--border);letter-spacing:.5px;font-weight:500}
 .footer-sep{color:var(--border-light)}
 .footer kbd{background:var(--surface);border:1px solid var(--border);border-radius:3px;padding:1px 5px;font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--lgray)}
 
@@ -1277,30 +1591,27 @@ input[type=range]::-moz-range-thumb{width:16px;height:16px;border-radius:50%;bac
     <button class="mode-btn active" data-mode="line_follow" onclick="setMode('line_follow')">Line Following</button>
     <button class="mode-btn" data-mode="wall_follow" onclick="setMode('wall_follow')">Wall Following</button>
     <button class="mode-btn" data-mode="car_track" onclick="setMode('car_track')">Car Tracking</button>
+    <button class="mode-btn" data-mode="safety_stop" onclick="setMode('safety_stop')">Safety Stop</button>
   </div>
   <div class="status-area">
     <div class="conn-status"><span class="conn-dot" id="connDot"></span><span id="connText">Connected</span></div>
-    <div class="score-box">
-      <span class="score-label">Score</span>
-      <span class="score-val" id="scoreVal">0</span>
     </div>
   </div>
-</div>
-<div class="score-bar-wrap"><div class="score-bar" id="scoreBar" style="width:0%;background:var(--red)"></div></div>
 
 <!-- ===== Main 4-Panel Grid ===== -->
 <div class="main">
   <div class="panel">
-    <div class="panel-hdr"><span class="panel-hdr-icon" style="background:var(--green)"></span><span class="panel-hdr-text">Camera / LIDAR</span></div>
-    <div class="img-wrap"><img id="imgRaw" src="/api/mjpeg/raw" alt=""><div class="img-placeholder" id="phRaw">Awaiting camera feed&hellip;</div></div>
+    <div class="panel-hdr"><span class="panel-hdr-icon" style="background:var(--green)"></span><span class="panel-hdr-text">Camera</span></div>
+    <div class="img-wrap"><img id="imgRaw" alt=""><div class="img-placeholder" id="phRaw">Awaiting camera feed&hellip;</div></div>
   </div>
   <div class="panel">
     <div class="panel-hdr"><span class="panel-hdr-icon" style="background:var(--cyan)"></span><span class="panel-hdr-text">Processing View</span></div>
-    <div class="img-wrap"><img id="imgProc" src="/api/mjpeg/proc" alt=""><div class="img-placeholder" id="phProc">Awaiting processing&hellip;</div></div>
+    <div class="img-wrap"><img id="imgProc" alt=""><div class="img-placeholder" id="phProc">Awaiting processing&hellip;</div></div>
   </div>
   <div class="panel">
-    <div class="panel-hdr"><span class="panel-hdr-icon" style="background:var(--amber)"></span><span class="panel-hdr-text">Telemetry</span></div>
-    <div class="telem" id="telemBox"></div>
+    <div class="panel-hdr"><span class="panel-hdr-icon" style="background:var(--amber)"></span><span class="panel-hdr-text">P-Control Error</span></div>
+    <div class="chart-wrap"><canvas id="chartCanvas" width="600" height="240"></canvas></div>
+    <div class="telem" id="telemBox" style="max-height:140px;overflow-y:auto;flex:0 0 auto"></div>
   </div>
   <div class="panel">
     <div class="panel-hdr"><span class="panel-hdr-icon" style="background:var(--magenta)"></span><span class="panel-hdr-text" id="tuneHdr">Tuning &mdash; Line Following</span></div>
@@ -1310,7 +1621,7 @@ input[type=range]::-moz-range-thumb{width:16px;height:16px;border-radius:50%;bac
 
 <!-- ===== Footer ===== -->
 <div class="footer">
-  <span>RACECAR Neo &middot; Neobotics</span>
+  <span>RACECAR Neo &middot; BWSI MIT</span>
   <span class="footer-sep">|</span>
   <span>Hold <kbd>RT</kbd> to Drive</span>
   <span class="footer-sep">|</span>
@@ -1488,7 +1799,7 @@ function buildBasicColorPicker(box){
 function buildSliders(params){
   const box=document.getElementById('tuneBox');
   box.innerHTML='';
-  const modeNames={line_follow:'Line Following',wall_follow:'Wall Following',car_track:'Car Tracking'};
+  const modeNames={line_follow:'Line Following',wall_follow:'Wall Following',car_track:'Car Tracking',safety_stop:'Safety Stop'};
   document.getElementById('tuneHdr').textContent='Tuning \u2014 '+(modeNames[currentMode]||'???');
   if(currentMode==='line_follow'){
     // Standard / Advanced toggle
@@ -1523,10 +1834,67 @@ function buildSliders(params){
     box.appendChild(slRow);
 
     if(lfSubMode==='standard'){
-      // Standard mode: Hue + SV per color
-      const hdr=document.createElement('div');hdr.className='priority-header';
-      hdr.textContent='Color Picker \u2014 Standard';box.appendChild(hdr);
-      buildBasicColorPicker(box);
+      // ---- Standard mode: custom Hue Range + SV slider ----
+      // Hue dual-range slider
+      const hueGroup=document.createElement('div');hueGroup.className='slider-group';
+      const hueRow=document.createElement('div');hueRow.className='slider-row';
+      const hueLbl=document.createElement('span');hueLbl.className='slider-label';hueLbl.textContent='Color Range';
+      const hueVal=document.createElement('span');hueVal.className='slider-val';hueVal.id='hueRangeVal';
+      // Find current values from params
+      let curLo=0,curHi=20;
+      params.forEach(p=>{if(p.attr==='lf_hue_low')curLo=p.value;if(p.attr==='lf_hue_high')curHi=p.value;});
+      hueVal.textContent=curLo+' \u2013 '+curHi;
+      hueRow.appendChild(hueLbl);hueRow.appendChild(hueVal);hueGroup.appendChild(hueRow);
+      const wrap=document.createElement('div');wrap.className='hue-range-wrap';
+      wrap.innerHTML='<div class="hue-range-track"></div><div class="hue-range-sel" id="hueSel"></div><div class="hue-range-thumb" id="hueThLo"></div><div class="hue-range-thumb" id="hueThHi"></div>';
+      hueGroup.appendChild(wrap);box.appendChild(hueGroup);
+      // Initialize after DOM insertion
+      setTimeout(()=>{
+        const track=wrap,sel=document.getElementById('hueSel'),lo=document.getElementById('hueThLo'),hi=document.getElementById('hueThHi');
+        const W=()=>track.getBoundingClientRect().width||200;
+        function posFromVal(v){return(v/179)*100;}
+        function valFromPos(pct){return Math.round(Math.max(0,Math.min(179,pct*179/100)));}
+        function update(){
+          const loPct=posFromVal(curLo),hiPct=posFromVal(curHi);
+          lo.style.left=loPct+'%';hi.style.left=hiPct+'%';
+          sel.style.left=Math.min(loPct,hiPct)+'%';sel.style.width=Math.abs(hiPct-loPct)+'%';
+          hueVal.textContent=Math.min(curLo,curHi)+' \u2013 '+Math.max(curLo,curHi);
+        }
+        update();
+        function drag(thumb,setter){
+          let dragging=false;
+          function onMove(e){
+            if(!dragging)return;e.preventDefault();
+            const rect=track.getBoundingClientRect();
+            const cx=(e.touches?e.touches[0].clientX:e.clientX);
+            const pct=Math.max(0,Math.min(100,((cx-rect.left)/rect.width)*100));
+            setter(valFromPos(pct));update();
+          }
+          function onUp(){dragging=false;document.removeEventListener('mousemove',onMove);document.removeEventListener('mouseup',onUp);document.removeEventListener('touchmove',onMove);document.removeEventListener('touchend',onUp);}
+          thumb.addEventListener('mousedown',e=>{dragging=true;e.preventDefault();document.addEventListener('mousemove',onMove);document.addEventListener('mouseup',onUp);});
+          thumb.addEventListener('touchstart',e=>{dragging=true;document.addEventListener('touchmove',onMove,{passive:false});document.addEventListener('touchend',onUp);},{passive:true});
+        }
+        drag(lo,v=>{curLo=v;setParam('lf_hue_low',v);});
+        drag(hi,v=>{curHi=v;setParam('lf_hue_high',v);});
+      },0);
+
+      // Brightness slider (white→black gradient visual cue)
+      let curSat=120;
+      params.forEach(p=>{if(p.attr==='lf_saturation')curSat=p.value;});
+      const satGroup=document.createElement('div');satGroup.className='slider-group';
+      const satRow=document.createElement('div');satRow.className='slider-row';
+      const satLbl=document.createElement('span');satLbl.className='slider-label';satLbl.textContent='Brightness';
+      const satVal=document.createElement('span');satVal.className='slider-val';satVal.id='svSatVal';
+      satVal.textContent=curSat;
+      satRow.appendChild(satLbl);satRow.appendChild(satVal);satGroup.appendChild(satRow);
+      const satSlider=document.createElement('input');satSlider.type='range';satSlider.min=0;satSlider.max=255;satSlider.step=1;satSlider.value=curSat;
+      satSlider.style.cssText='background:linear-gradient(to right,#fff,#000);height:8px;border-radius:4px;';
+      satSlider.oninput=function(){
+        const nv=parseInt(this.value);curSat=nv;
+        satVal.textContent=nv;
+        setParam('lf_saturation',nv);
+      };
+      satGroup.appendChild(satSlider);box.appendChild(satGroup);
     }else{
       // Advanced mode: full color priority + HSV ranges
       const hdr=document.createElement('div');hdr.className='priority-header';
@@ -1537,7 +1905,10 @@ function buildSliders(params){
     }
     const sep=document.createElement('div');sep.className='tune-divider';box.appendChild(sep);
   }
+  // Skip hue/sat params in generic loop when standard LF (already rendered above)
+  const skipAttrs=(currentMode==='line_follow'&&lfSubMode==='standard')?new Set(['lf_hue_low','lf_hue_high','lf_saturation']):new Set();
   params.forEach(p=>{
+    if(skipAttrs.has(p.attr))return;
     const g=document.createElement('div');g.className='slider-group';
     const r=document.createElement('div');r.className='slider-row';
     const l=document.createElement('span');l.className='slider-label';l.textContent=p.label;
@@ -1583,63 +1954,85 @@ function buildSliders(params){
   lastParams=params;
 }
 
-// ---- Score color ----
-function scoreColor(s){return s>=70?'var(--green)':s>=35?'var(--yellow)':'var(--red)';}
+// ---- Error chart drawing (rolling fixed-width window) ----
+let errorHistory=[];
+const CHART_WINDOW=300;
+function drawErrorChart(){
+  const c=document.getElementById('chartCanvas');
+  if(!c)return;
+  const rect=c.parentElement.getBoundingClientRect();
+  c.width=Math.max(rect.width,200);c.height=Math.max(rect.height-4,100);
+  const ctx=c.getContext('2d');
+  const w=c.width,h=c.height;
+  ctx.fillStyle='#111118';ctx.fillRect(0,0,w,h);
+  const midY=h/2;
+  // Always draw grid + zero line even with no data
+  ctx.strokeStyle='rgba(74,74,90,0.25)';ctx.lineWidth=0.5;
+  for(let i=1;i<4;i++){const y1=midY-(i/4)*(h/2);const y2=midY+(i/4)*(h/2);
+    ctx.beginPath();ctx.moveTo(0,y1);ctx.lineTo(w,y1);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(0,y2);ctx.lineTo(w,y2);ctx.stroke();}
+  ctx.strokeStyle='rgba(255,45,32,0.5)';ctx.lineWidth=1;ctx.setLineDash([5,4]);
+  ctx.beginPath();ctx.moveTo(0,midY);ctx.lineTo(w,midY);ctx.stroke();ctx.setLineDash([]);
+  if(!errorHistory||errorHistory.length<2){
+    ctx.fillStyle='#4A4A60';ctx.font='12px Inter,sans-serif';ctx.textAlign='center';
+    ctx.fillText('Awaiting error data\u2026',w/2,h/2);return;
+  }
+  // Rolling window: always map CHART_WINDOW slots across full width.
+  // Data is right-aligned — new points enter from the right.
+  const n=errorHistory.length;
+  const slots=CHART_WINDOW;
+  const offset=Math.max(0,slots-n);  // empty slots on the left
+  const yMax=Math.max(...errorHistory.map(Math.abs),1);
+  const pxPerSlot=w/slots;
+  // Error curve (starts offset slots from left edge)
+  ctx.strokeStyle='#00D4FF';ctx.lineWidth=1.5;ctx.beginPath();
+  let firstPt=true;
+  for(let i=0;i<n;i++){
+    const x=(offset+i)*pxPerSlot;
+    const y=midY-(errorHistory[i]/yMax)*(midY-6);
+    if(firstPt){ctx.moveTo(x,y);firstPt=false;}else ctx.lineTo(x,y);
+  }ctx.stroke();
+  // Fill under curve
+  const lastX=(offset+n-1)*pxPerSlot;
+  const firstX=offset*pxPerSlot;
+  ctx.lineTo(lastX,midY);ctx.lineTo(firstX,midY);ctx.closePath();
+  ctx.fillStyle='rgba(0,212,255,0.06)';ctx.fill();
+  // Labels
+  ctx.fillStyle='#9999AA';ctx.font='10px JetBrains Mono,monospace';ctx.textAlign='left';
+  ctx.fillText('Error',4,12);ctx.fillStyle='#FF2D20';ctx.fillText('0',4,midY-3);
+  ctx.fillStyle='#4A4A60';ctx.textAlign='right';
+  ctx.fillText('+'+yMax.toFixed(0),w-4,14);ctx.fillText('-'+yMax.toFixed(0),w-4,h-4);
+}
 
-// ---- MJPEG stream ----
+// ---- Polled image feeds (staggered, self-throttling, no pile-up) ----
 (function(){
   const raw=document.getElementById('imgRaw'),proc=document.getElementById('imgProc');
-  raw.onload=()=>{document.getElementById('phRaw').style.display='none';raw.style.display='block';};
-  raw.onerror=()=>{raw.style.display='none';document.getElementById('phRaw').style.display='block';};
-  proc.onload=()=>{document.getElementById('phProc').style.display='none';proc.style.display='block';};
-  proc.onerror=()=>{proc.style.display='none';document.getElementById('phProc').style.display='block';};
+  const phRaw=document.getElementById('phRaw'),phProc=document.getElementById('phProc');
+  // Each feed runs its own chained loop — no overlap, no pile-up
+  function feedLoop(el,ph,type){
+    const img=new Image();
+    img.onload=()=>{el.src=img.src;el.style.display='block';ph.style.display='none';setTimeout(()=>feedLoop(el,ph,type),80);};
+    img.onerror=()=>{el.style.display='none';ph.style.display='block';setTimeout(()=>feedLoop(el,ph,type),500);};
+    img.src='/api/img/'+type+'?t='+Date.now();
+  }
+  // Stagger the two feeds by 40ms so they don't hit the server simultaneously
+  feedLoop(raw,phRaw,'raw');
+  setTimeout(()=>feedLoop(proc,phProc,'proc'),40);
 })();
 
-// ---- Telemetry render ----
+// ---- Telemetry render (compact — shares panel with chart) ----
 function renderTelem(d){
-  const imu=d.imu||{accel:[0,0,0],gyro:[0,0,0]};
   const c=d.ctrl||{lt:0,rt:0,lj:[0,0],rj:[0,0]};
-  let h='<div class="section">IMU</div>';
-  h+='<div class="tbl">';
-  h+='<span class="lbl">Accel</span><span class="dat">X: '+imu.accel[0].toFixed(2)+' &nbsp; Y: '+imu.accel[1].toFixed(2)+' &nbsp; Z: '+imu.accel[2].toFixed(2)+' m/s\u00b2</span>';
-  h+='<span class="lbl">Gyro</span><span class="dat">X: '+imu.gyro[0].toFixed(2)+' &nbsp; Y: '+imu.gyro[1].toFixed(2)+' &nbsp; Z: '+imu.gyro[2].toFixed(2)+' rad/s</span>';
-  h+='</div>';
-  h+='<div class="section">Controller</div>';
-  h+='<div class="tbl">';
-  h+='<span class="lbl">Triggers</span><span class="dat">L: '+c.lt.toFixed(2)+' &nbsp; R: '+c.rt.toFixed(2)+'</span>';
-  h+='<span class="lbl">L Stick</span><span class="dat">('+c.lj[0].toFixed(2)+', '+c.lj[1].toFixed(2)+')</span>';
-  h+='<span class="lbl">R Stick</span><span class="dat">('+c.rj[0].toFixed(2)+', '+c.rj[1].toFixed(2)+')</span>';
-  h+='</div>';
-  h+='<div class="section">Drive Output</div>';
-  h+='<div class="tbl">';
-  h+='<span class="lbl">Speed</span><span class="dat">'+d.speed.toFixed(3)+'</span>';
-  h+='<span class="lbl">Angle</span><span class="dat">'+d.angle.toFixed(3)+'</span>';
-  h+='</div>';
+  let h='<div class="tbl">';
+  h+='<span class="lbl">Drive</span><span class="dat">Spd: '+d.speed.toFixed(3)+' &nbsp; Ang: '+d.angle.toFixed(3)+'</span>';
+  h+='<span class="lbl">Trigger</span><span class="dat">L: '+c.lt.toFixed(2)+' &nbsp; R: '+c.rt.toFixed(2)+'</span>';
   if(d.mode==='line_follow'){
-    const sub=d.lf_sub_mode||'standard';
-    h+='<div class="section">Line Following ('+sub.charAt(0).toUpperCase()+sub.slice(1)+')</div>';
-    h+='<div class="tbl">';
-    const ac=d.active_color;
-    const acDot=ac?'<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+(colorDots[ac]||'#999')+';margin:0 4px;vertical-align:middle;box-shadow:0 0 4px '+(colorDots[ac]||'#999')+'"></span>':'';
-    h+='<span class="lbl">Tracking</span><span class="dat">'+acDot+(ac?ac.charAt(0).toUpperCase()+ac.slice(1):'None')+'</span>';
     const cc=d.contour_center;
-    h+='<span class="lbl">Contour</span><span class="dat">'+(cc?'('+cc[0]+', '+cc[1]+')':'None')+'</span>';
-    h+='<span class="lbl">Area</span><span class="dat">'+d.contour_area+'</span>';
-    h+='</div>';
+    h+='<span class="lbl">Contour</span><span class="dat">'+(cc?'('+cc[0]+', '+cc[1]+')':'None')+' &nbsp; Area: '+d.contour_area+'</span>';
   }else if(d.mode==='wall_follow'){
-    h+='<div class="section">Wall Following</div>';
-    h+='<div class="tbl">';
-    const sd=d.wf_scan_dir||90;
-    const w=d.wf_window||30;
-    const dirL=sd>=80?'Side':(sd>=45?'Diag':'Fwd');
-    const modeTag=d.wf_use_avg?'Average':'Closest';
-    h+='<span class="lbl">Left</span><span class="dat">'+d.wf_left_dist.toFixed(0)+' cm</span>';
-    h+='<span class="lbl">Right</span><span class="dat">'+d.wf_right_dist.toFixed(0)+' cm</span>';
-    h+='<span class="lbl">\u0394</span><span class="dat">'+(d.wf_right_dist-d.wf_left_dist).toFixed(0)+' cm</span>';
-    h+='<span class="lbl">Scan</span><span class="dat">'+sd+'\u00b0 ['+dirL+'] \u00b1'+w+'\u00b0</span>';
-    h+='<span class="lbl">Measurement</span><span class="dat">'+modeTag+' Point</span>';
-    h+='</div>';
+    h+='<span class="lbl">Walls</span><span class="dat">L: '+d.wf_left_dist.toFixed(0)+'cm &nbsp; R: '+d.wf_right_dist.toFixed(0)+'cm &nbsp; \u0394: '+(d.wf_right_dist-d.wf_left_dist).toFixed(0)+'cm</span>';
   }
+  h+='</div>';
   document.getElementById('telemBox').innerHTML=h;
 }
 
@@ -1650,19 +2043,15 @@ function setConn(ok){
   else{dot.classList.add('err');txt.textContent='Reconnecting\u2026';pollOk=false;}
 }
 
-// ---- Main poll loop ----
+// ---- Main poll loop (chained setTimeout — no pile-up) ----
+let _chartDirty=false;
 async function poll(){
   try{
     const r=await fetch(API+'/state');
     if(!r.ok)throw new Error();
     const d=await r.json();
     setConn(true);
-    const sv=document.getElementById('scoreVal');
-    sv.textContent=Math.round(d.score);
-    sv.style.color=scoreColor(d.score);
-    const bar=document.getElementById('scoreBar');
-    bar.style.width=d.score+'%';
-    bar.style.background=scoreColor(d.score);
+    if(d.error_history){errorHistory=d.error_history;_chartDirty=true;}
     if(d.mode!==currentMode){currentMode=d.mode;paramsDirty=true;
       document.querySelectorAll('.mode-btn').forEach(b=>b.classList.toggle('active',b.dataset.mode===d.mode));
     }
@@ -1676,9 +2065,7 @@ async function poll(){
       if(d.basic_sv)basicSV=d.basic_sv;
       if(needRebuild){if(lfSubMode==='advanced')buildPriorityList(colorPriority,activeColor);}
     }
-    // Sync LF sub-mode
     if(d.lf_sub_mode&&d.lf_sub_mode!==lfSubMode){lfSubMode=d.lf_sub_mode;paramsDirty=true;}
-    // Sync wall-follow toggle
     if(d.wf_use_avg!==undefined&&d.wf_use_avg!==wfUseAvg){
       wfUseAvg=d.wf_use_avg;
       const mv=document.getElementById('wfModeVal');
@@ -1688,13 +2075,24 @@ async function poll(){
     if(paramsDirty&&d.params){buildSliders(d.params);paramsDirty=false;}
     else if(d.params){d.params.forEach(p=>{const el=document.getElementById('sv_'+p.attr);if(el)el.textContent=p.fmt==='float'?p.value.toFixed(2):p.value;});}
   }catch(e){setConn(false);}
+  setTimeout(poll,80);  // chain next poll after current completes (~12 fps state)
 }
 
+// Chart renders on rAF — decoupled from network, smooth 60fps
+function chartFrame(){if(_chartDirty){drawErrorChart();_chartDirty=false;}requestAnimationFrame(chartFrame);}
+requestAnimationFrame(chartFrame);
+
 paramsDirty=true;
-setInterval(poll,100);
+poll();
 </script>
 </body>
 </html>"""
+
+
+# Pre-cache HTML as bytes + gzip so we never re-encode per request
+import gzip as _gzip
+_DASHBOARD_HTML_BYTES = _DASHBOARD_HTML.encode("utf-8")
+_DASHBOARD_HTML_GZ = _gzip.compress(_DASHBOARD_HTML_BYTES, compresslevel=6)
 
 
 class _DashboardHandler(_BaseHandler):
@@ -1704,95 +2102,75 @@ class _DashboardHandler(_BaseHandler):
         pass  # suppress noisy access logs
 
     def do_GET(self):
-        if self.path == "/":
-            self._serve_html()
-        elif self.path == "/api/state":
-            self._serve_state()
-        elif self.path.startswith("/api/mjpeg/"):
-            self._serve_mjpeg()
-        elif self.path.startswith("/api/img/"):
-            self._serve_image()
-        else:
-            self.send_error(404)
+        try:
+            if self.path == "/":
+                self._serve_html()
+            elif self.path == "/api/state":
+                self._serve_state()
+            elif self.path.startswith("/api/mjpeg/"):
+                self._serve_mjpeg()
+            elif self.path.startswith("/api/img/"):
+                self._serve_image()
+            else:
+                self.send_error(404)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+            pass  # client disconnected -- normal over WiFi
 
     def do_POST(self):
-        if self.path == "/api/mode":
-            self._handle_mode()
-        elif self.path == "/api/param":
-            self._handle_param()
-        elif self.path == "/api/wf_toggle":
-            self._handle_wf_toggle()
-        elif self.path == "/api/color_priority":
-            self._handle_color_priority()
-        elif self.path == "/api/color_hsv":
-            self._handle_color_hsv()
-        elif self.path == "/api/color_enabled":
-            self._handle_color_enabled()
-        elif self.path == "/api/lf_sub_mode":
-            self._handle_lf_sub_mode()
-        elif self.path == "/api/basic_color":
-            self._handle_basic_color()
-        elif self.path == "/api/save_colors":
-            self._handle_save_colors()
-        elif self.path == "/api/load_colors":
-            self._handle_load_colors()
-        else:
-            self.send_error(404)
+        try:
+            if self.path == "/api/mode":
+                self._handle_mode()
+            elif self.path == "/api/param":
+                self._handle_param()
+            elif self.path == "/api/wf_toggle":
+                self._handle_wf_toggle()
+            elif self.path == "/api/color_priority":
+                self._handle_color_priority()
+            elif self.path == "/api/color_hsv":
+                self._handle_color_hsv()
+            elif self.path == "/api/color_enabled":
+                self._handle_color_enabled()
+            elif self.path == "/api/lf_sub_mode":
+                self._handle_lf_sub_mode()
+            elif self.path == "/api/basic_color":
+                self._handle_basic_color()
+            elif self.path == "/api/save_colors":
+                self._handle_save_colors()
+            elif self.path == "/api/load_colors":
+                self._handle_load_colors()
+            else:
+                self.send_error(404)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+            pass  # client disconnected -- normal over WiFi
 
     # ---- Endpoints ----
 
     def _serve_html(self):
-        body = _DASHBOARD_HTML.encode("utf-8")
+        # Serve gzip-compressed HTML if browser supports it (~41KB → ~5KB)
+        ae = self.headers.get("Accept-Encoding", "")
+        if "gzip" in ae:
+            body = _DASHBOARD_HTML_GZ
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Encoding", "gzip")
+        else:
+            body = _DASHBOARD_HTML_BYTES
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "keep-alive")
+        self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         self.wfile.write(body)
 
     def _serve_state(self):
-        score = calculate_score()
-        state.score = score
-        data = {
-            "mode": state.mode,
-            "mode_name": MODE_NAMES.get(state.mode, "???"),
-            "score": round(score, 1),
-            "speed": round(state.speed, 3),
-            "angle": round(state.angle, 3),
-            "contour_center": list(state.contour_center) if state.contour_center else None,
-            "contour_area": state.contour_area,
-            "wf_left_dist": round(state.wf_left_dist, 1),
-            "wf_right_dist": round(state.wf_right_dist, 1),
-            "wf_scan_dir": state.wf_scan_dir,
-            "wf_window": state.wf_window,
-            "wf_use_avg": state.wf_use_avg,
-            "params": self._get_params(),
-            "color_priority": list(state.lf_color_priority),
-            "active_color": state.lf_active_color,
-            "color_hsv": state.lf_color_hsv if state.lf_color_hsv else {},
-            "color_enabled": state.lf_color_enabled if state.lf_color_enabled else {},
-            "lf_sub_mode": state.lf_sub_mode,
-            "basic_hue": state.lf_basic_hue if state.lf_basic_hue else {},
-            "basic_sv": state.lf_basic_sv if state.lf_basic_sv else {},
-        }
-        # IMU (read from cache — NEVER call rc.* from this thread!)
-        a = state.imu_accel
-        w = state.imu_gyro
-        data["imu"] = {
-            "accel": [round(a[0], 2), round(a[1], 2), round(a[2], 2)],
-            "gyro":  [round(w[0], 2), round(w[1], 2), round(w[2], 2)],
-        }
-        # Controller (read from cache)
-        data["ctrl"] = {
-            "lt": round(state.ctrl_lt, 2),
-            "rt": round(state.ctrl_rt, 2),
-            "lj": [round(state.ctrl_lj[0], 2), round(state.ctrl_lj[1], 2)],
-            "rj": [round(state.ctrl_rj[0], 2), round(state.ctrl_rj[1], 2)],
-        }
-
-        body = _json.dumps(data).encode()
+        """Serve pre-cached JSON state (built in main loop — zero serialization here)."""
+        body = state._json_state
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Cache-Control", "no-cache")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "keep-alive")
         self.end_headers()
         self.wfile.write(body)
 
@@ -1808,6 +2186,7 @@ class _DashboardHandler(_BaseHandler):
         self.send_header("Content-Type", "image/jpeg")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Connection", "keep-alive")
         self.end_headers()
         self.wfile.write(data)
 
@@ -2023,6 +2402,58 @@ class _DashboardHandler(_BaseHandler):
         return result
 
 
+def _build_state_json():
+    """Pre-build the /api/state JSON payload in the main thread.
+    Avoids per-request serialization and keeps heavy data out of HTTP threads."""
+    result = []
+    for label, attr, lo, hi, step, fmt in _TUNE_PARAMS.get(state.mode, []):
+        val = getattr(state, attr)
+        result.append({
+            "label": label, "attr": attr,
+            "value": round(val, 2) if fmt == "float" else int(val),
+            "min": lo, "max": hi, "step": step, "fmt": fmt,
+        })
+    a = state.imu_accel
+    w = state.imu_gyro
+    data = {
+        "mode": state.mode,
+        "mode_name": MODE_NAMES.get(state.mode, "???"),
+        "speed": round(state.speed, 3),
+        "angle": round(state.angle, 3),
+        "contour_center": list(state.contour_center) if state.contour_center else None,
+        "contour_area": state.contour_area,
+        "wf_left_dist": round(state.wf_left_dist, 1),
+        "wf_right_dist": round(state.wf_right_dist, 1),
+        "wf_scan_dir": state.wf_scan_dir,
+        "wf_window": state.wf_window,
+        "wf_use_avg": state.wf_use_avg,
+        "ss_fwd_dist": round(state.ss_fwd_dist, 1),
+        "ss_distance": state.ss_distance,
+        "ss_kp": state.ss_kp,
+        "ss_stopped": state.ss_stopped,
+        "params": result,
+        "color_priority": list(state.lf_color_priority),
+        "active_color": state.lf_active_color,
+        "color_hsv": state.lf_color_hsv if state.lf_color_hsv else {},
+        "color_enabled": state.lf_color_enabled if state.lf_color_enabled else {},
+        "lf_sub_mode": state.lf_sub_mode,
+        "basic_hue": state.lf_basic_hue if state.lf_basic_hue else {},
+        "basic_sv": state.lf_basic_sv if state.lf_basic_sv else {},
+        "error_history": list(state.error_history[-300:]),
+        "imu": {
+            "accel": [round(a[0], 2), round(a[1], 2), round(a[2], 2)],
+            "gyro":  [round(w[0], 2), round(w[1], 2), round(w[2], 2)],
+        },
+        "ctrl": {
+            "lt": round(state.ctrl_lt, 2),
+            "rt": round(state.ctrl_rt, 2),
+            "lj": [round(state.ctrl_lj[0], 2), round(state.ctrl_lj[1], 2)],
+            "rj": [round(state.ctrl_rj[0], 2), round(state.ctrl_rj[1], 2)],
+        },
+    }
+    state._json_state = _json.dumps(data).encode()
+
+
 def _start_web_dashboard():
     """Launch the web dashboard HTTP server in a daemon thread."""
     port = _WEB_PORT
@@ -2041,11 +2472,29 @@ def _start_web_dashboard():
     lan_ip = None
     try:
         s = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        s.settimeout(0.1)
         s.connect(("8.8.8.8", 80))  # doesn't actually send data
         lan_ip = s.getsockname()[0]
         s.close()
     except Exception:
         pass
+    # Fallback: try gethostname resolution
+    if not lan_ip or lan_ip == "127.0.0.1":
+        try:
+            lan_ip = _socket.gethostbyname(_socket.gethostname())
+        except Exception:
+            pass
+    # Fallback: scan interfaces via ip/ifconfig
+    if not lan_ip or lan_ip.startswith("127."):
+        try:
+            import subprocess as _sp
+            out = _sp.check_output(["hostname", "-I"], timeout=2).decode().strip()
+            for addr in out.split():
+                if not addr.startswith("127."):
+                    lan_ip = addr
+                    break
+        except Exception:
+            pass
 
     local_url = f"http://localhost:{port}"
     print(f"\n>> \033[1;96mWeb Dashboard running at {local_url}\033[0m")
@@ -2083,8 +2532,11 @@ def _start_web_dashboard():
 _TUNE_PARAMS = {
     "line_follow": [
         # label              attr               min   max   step  fmt
+        ("Color Low",        "lf_hue_low",       0,   179,  1,    "int"),
+        ("Color High",       "lf_hue_high",      0,   179,  1,    "int"),
+        ("Brightness",       "lf_saturation",    0,   255,  1,    "int"),
         ("Speed %",          "lf_speed",         0,   100,  5,    "int"),
-        ("Steer Sens %",     "lf_angle_sens",    0,   100,  5,    "int"),
+        ("Sensitivity %",    "lf_angle_sens",    0,   100,  5,    "int"),
     ],
     "wall_follow": [
         # label              attr               min   max   step  fmt
@@ -2100,6 +2552,13 @@ _TUNE_PARAMS = {
         ("Ki",               "ct_ki",            0.0, 10.0, 0.1,  "float"),
         ("Kd",               "ct_kd",            0.0, 50.0, 0.5,  "float"),
         ("Confidence %",     "ct_score_thresh",  0.1,  1.0, 0.05, "float"),
+    ],
+    "safety_stop": [
+        # label                         attr               min   max   step  fmt
+        ("Speed %",                     "ss_speed",         0,   100,  5,    "int"),
+        ("Safety Threshold Dist (cm)",  "ss_distance",      5,   500,  5,    "int"),
+        ("Braking Kp %",               "ss_kp",            0,   100,  5,    "int"),
+        ("Sensitivity %",              "ss_sensitivity",    0,   100,  5,    "int"),
     ],
 }
 
@@ -2176,16 +2635,6 @@ def _headless_print_status():
     Print a compact status block to terminal. Called from update_slow (~1/sec).
     """
     mode_name = MODE_NAMES.get(state.mode, "???")
-    score = calculate_score()
-    state.score = score
-
-    # Score color via ANSI
-    if score >= 70:
-        sc = "\033[92m"   # bright green
-    elif score >= 35:
-        sc = "\033[93m"   # yellow
-    else:
-        sc = "\033[91m"   # red
     rst = "\033[0m"
 
     params = _TUNE_PARAMS.get(state.mode, [])
@@ -2200,21 +2649,33 @@ def _headless_print_status():
         param_strs.append(f"{marker}{label}:{vstr}")
     param_line = "  ".join(param_strs)
 
+    # Recent error magnitude
+    recent_err = 0.0
+    if state.error_history:
+        recent = state.error_history[-60:]
+        recent_err = float(np.mean([abs(e) for e in recent]))
+
     print(
         f"\r\033[K"
         f"[{mode_name}]  "
-        f"Score: {sc}{score:.0f}/100{rst}  "
+        f"Err:{recent_err:+.1f}  "
         f"Spd:{state.speed:+.2f}  Ang:{state.angle:+.2f}  "
     )
     if state.mode == "line_follow":
         sub = state.lf_sub_mode.capitalize()
-        prio = " > ".join(c.capitalize() for c in state.lf_color_priority)
-        active = (state.lf_active_color or "none").capitalize()
-        print(f"  [{sub}]  Colors: {prio}  |  Tracking: \033[1m{active}\033[0m")
+        if sub == "Standard":
+            print(f"  [{sub}]  C:{state.lf_hue_low}-{state.lf_hue_high} B:{state.lf_saturation}")
+        else:
+            prio = " > ".join(c.capitalize() for c in state.lf_color_priority)
+            active = (state.lf_active_color or "none").capitalize()
+            print(f"  [{sub}]  Colors: {prio}  |  Tracking: \033[1m{active}\033[0m")
+    elif state.mode == "safety_stop":
+        status = "STOPPED" if state.ss_stopped else "DRIVING"
+        print(f"  Fwd:{state.ss_fwd_dist:.0f}cm  Thr:{state.ss_distance}cm  Kp:{state.ss_kp}%  [{status}]")
     if param_line:
         print(f"  Params: {param_line}")
     print(
-        f"  Controls: A=Save/Line B=Wall Y=Car | X=NextParam LB=- RB=+ | RT=Drive",
+        f"  Controls: A=Line B=Wall Y=Car | X=NextParam LB=- RB=+ | RT=Drive",
         end="", flush=True,
     )
 
@@ -2226,7 +2687,7 @@ def _headless_print_status():
 class OneshotApp:
     """
     Modern dark-themed tkinter application that provides:
-      - 4-panel sensor display (camera, processing, telemetry, score)
+      - 4-panel sensor display (camera, processing, chart, telemetry)
       - Top-bar mode switching
       - Dynamic toolbar with per-mode tuning sliders
     Only instantiated when HAS_TKINTER is True.
@@ -2243,7 +2704,6 @@ class OneshotApp:
         self.font_subtitle = tkfont.Font(family="Helvetica", size=12, weight="bold")
         self.font_label    = tkfont.Font(family="Helvetica", size=10, weight="bold")
         self.font_data     = tkfont.Font(family="Consolas",  size=10)
-        self.font_score    = tkfont.Font(family="Helvetica", size=42, weight="bold")
         self.font_btn      = tkfont.Font(family="Helvetica", size=11, weight="bold")
         self.font_small    = tkfont.Font(family="Helvetica", size=9)
 
@@ -2280,9 +2740,10 @@ class OneshotApp:
                  fg=Colors.NEO_ORANGE, font=self.font_subtitle).pack(side="left", padx=(0, 20))
 
         modes = [
-            ("Line Following", "line_follow", Colors.GREEN),
-            ("Wall Following", "wall_follow", Colors.CYAN),
-            ("Car Tracking",   "car_track",   Colors.NEO_ORANGE),
+            ("Line Following", "line_follow",  Colors.GREEN),
+            ("Wall Following", "wall_follow",  Colors.CYAN),
+            ("Car Tracking",   "car_track",    Colors.NEO_ORANGE),
+            ("Safety Stop",    "safety_stop",  Colors.NEO_RED),
         ]
         btn_box = tk.Frame(bar, bg=Colors.BG_PANEL)
         btn_box.pack(side="right", padx=16)
@@ -2308,7 +2769,7 @@ class OneshotApp:
         row1 = tk.Frame(left, bg=Colors.BG_DARK)
         row1.pack(fill="both", expand=True)
 
-        raw_panel = self._panel(row1, "Camera / LIDAR View")
+        raw_panel = self._panel(row1, "Camera")
         raw_panel.pack(side="left", fill="both", expand=True, padx=(0, 3), pady=(0, 3))
         self.cvs_raw = tk.Canvas(raw_panel, bg=Colors.BG_SURFACE, highlightthickness=0)
         self.cvs_raw.pack(fill="both", expand=True, padx=3, pady=3)
@@ -2318,32 +2779,21 @@ class OneshotApp:
         self.cvs_proc = tk.Canvas(proc_panel, bg=Colors.BG_SURFACE, highlightthickness=0)
         self.cvs_proc.pack(fill="both", expand=True, padx=3, pady=3)
 
-        # Row 2: telemetry + score
+        # Row 2: chart (left) + telemetry (right)
         row2 = tk.Frame(left, bg=Colors.BG_DARK)
         row2.pack(fill="both", expand=True)
 
+        chart_panel = self._panel(row2, "P-Control Error")
+        chart_panel.pack(side="left", fill="both", expand=True, padx=(0, 3), pady=(3, 0))
+        self.cvs_chart = tk.Canvas(chart_panel, bg=Colors.BG_SURFACE, highlightthickness=0)
+        self.cvs_chart.pack(fill="both", expand=True, padx=3, pady=3)
+
         telem_panel = self._panel(row2, "Telemetry")
-        telem_panel.pack(side="left", fill="both", expand=True, padx=(0, 3), pady=(3, 0))
+        telem_panel.pack(side="left", fill="both", expand=True, padx=(3, 0), pady=(3, 0))
         self.txt_telem = tk.Text(telem_panel, bg=Colors.BG_SURFACE, fg=Colors.CYAN,
             font=self.font_data, relief="flat", bd=0, state="disabled",
             wrap="word", insertbackground=Colors.CYAN)
         self.txt_telem.pack(fill="both", expand=True, padx=4, pady=4)
-
-        score_panel = self._panel(row2, "Performance Score")
-        score_panel.pack(side="left", fill="both", expand=True, padx=(3, 0), pady=(3, 0))
-
-        self.lbl_score = tk.Label(score_panel, text="--", bg=Colors.BG_SURFACE,
-            fg=Colors.SCORE_HIGH, font=self.font_score)
-        self.lbl_score.pack(expand=True, pady=(10, 0))
-
-        self.cvs_bar = tk.Canvas(score_panel, bg=Colors.BG_SURFACE,
-            highlightthickness=0, height=14)
-        self.cvs_bar.pack(fill="x", padx=12, pady=(0, 2))
-
-        self.lbl_score_hint = tk.Label(score_panel,
-            text="Higher number = better tuning!",
-            bg=Colors.BG_SURFACE, fg=Colors.LIGHT_GRAY, font=self.font_small)
-        self.lbl_score_hint.pack(pady=(0, 10))
 
         # Right: toolbar
         right = tk.Frame(main, bg=Colors.BG_PANEL, width=290)
@@ -2411,9 +2861,10 @@ class OneshotApp:
         _switch_mode(mode)
 
         mode_meta = {
-            "line_follow": ("LINE FOLLOWING", Colors.GREEN),
-            "wall_follow": ("WALL FOLLOWING", Colors.CYAN),
-            "car_track":   ("CAR TRACKING",   Colors.NEO_ORANGE),
+            "line_follow":  ("LINE FOLLOWING", Colors.GREEN),
+            "wall_follow":  ("WALL FOLLOWING", Colors.CYAN),
+            "car_track":    ("CAR TRACKING",   Colors.NEO_ORANGE),
+            "safety_stop":  ("SAFETY STOP",    Colors.NEO_RED),
         }
         name, accent = mode_meta[mode]
         self.lbl_mode.config(text=name, fg=accent)
@@ -2431,6 +2882,8 @@ class OneshotApp:
             self._build_wf_toolbar()
         elif mode == "car_track":
             self._build_ct_toolbar()
+        elif mode == "safety_stop":
+            self._build_ss_toolbar()
 
     # ---- Toolbar Builders ----
     def _build_lf_toolbar(self):
@@ -2517,37 +2970,22 @@ class OneshotApp:
                      lambda v: setattr(state, "lf_angle_sens", int(v)))
 
     def _build_lf_standard(self, p):
-        """Standard mode: Hue + SV picker per enabled color."""
-        self._section_label(p, "Color Picker \u2014 Standard")
-        enabled = state.lf_color_enabled or {}
-        for key in state.lf_color_priority:
-            if not enabled.get(key, True):
-                continue
-            cdef = LINE_COLORS.get(key, {})
-            accent = self._dot_colors.get(key, Colors.LIGHT_GRAY)
+        """Standard mode: Color Low/High range + Brightness slider."""
+        self._section_label(p, "Color Tuning")
 
-            # Color header
-            hdr = tk.Frame(p, bg=Colors.BG_PANEL)
-            hdr.pack(fill="x", padx=12, pady=(6, 0))
-            dot = tk.Canvas(hdr, width=10, height=10, bg=Colors.BG_PANEL, highlightthickness=0)
-            dot.create_oval(1, 1, 9, 9, fill=accent, outline="")
-            dot.pack(side="left", padx=(0, 4))
-            tk.Label(hdr, text=cdef.get("label", key), bg=Colors.BG_PANEL,
-                     fg=Colors.WHITE, font=self.font_label).pack(side="left")
-            if key == state.lf_active_color:
-                tk.Label(hdr, text="TRACKING", bg=Colors.BG_PANEL,
-                         fg=Colors.GREEN, font=("Helvetica", 8, "bold")).pack(side="right")
+        # Color Low slider
+        self._slider(p, "Color Low", 0, 179, state.lf_hue_low,
+                     lambda v: setattr(state, "lf_hue_low", int(v)),
+                     accent=Colors.NEO_RED)
 
-            # Hue slider
-            hue_val = (state.lf_basic_hue or {}).get(key, 90)
-            self._slider(p, "Hue", 0, 179, hue_val,
-                         lambda v, k=key: self._set_basic_hue(k, int(v)),
+        # Color High slider
+        self._slider(p, "Color High", 0, 179, state.lf_hue_high,
+                     lambda v: setattr(state, "lf_hue_high", int(v)),
                          accent=Colors.NEO_RED)
 
-            # SV slider
-            sv_val = (state.lf_basic_sv or {}).get(key, 50)
-            self._slider(p, "Shade (Pale \u2190 Pure \u2192 Dark)", 0, 100, sv_val,
-                         lambda v, k=key: self._set_basic_sv(k, int(v)),
+        # Brightness slider
+        self._slider(p, "Brightness", 0, 255, state.lf_saturation,
+                     lambda v: setattr(state, "lf_saturation", int(v)),
                          accent=Colors.CYAN)
 
     def _set_basic_hue(self, color_key, value):
@@ -2748,13 +3186,28 @@ class OneshotApp:
                      int(state.ct_score_thresh * 100),
                      lambda v: setattr(state, "ct_score_thresh", v / 100))
 
+    def _build_ss_toolbar(self):
+        p = self.toolbar_container
+        self._section_label(p, "Safety Stop")
+        self._slider(p, "Speed %", 0, 100, state.ss_speed,
+                     lambda v: setattr(state, "ss_speed", int(v)))
+        self._slider(p, "Safety Threshold Dist (cm)", 5, 500, state.ss_distance,
+                     lambda v: setattr(state, "ss_distance", int(v)),
+                     accent=Colors.NEO_RED)
+        self._slider(p, "Braking Kp %", 0, 100, state.ss_kp,
+                     lambda v: setattr(state, "ss_kp", int(v)))
+        self._slider(p, "Sensitivity %", 0, 100, state.ss_sensitivity,
+                     lambda v: setattr(state, "ss_sensitivity", int(v)))
+        tk.Label(p, text="Steer: Left Joystick",
+                 font=self.font_info, fg=Colors.LGRAY, bg=Colors.BG_PANEL).pack(pady=(10, 0))
+
     # ---- Periodic Refresh (~30 FPS) ----
     def _tick(self):
         try:
             self._render_canvas(self.cvs_raw,  state.raw_image,       "_tk_raw")
             self._render_canvas(self.cvs_proc, state.processed_image, "_tk_proc")
+            self._render_chart()
             self._refresh_telemetry()
-            self._refresh_score()
         except Exception:
             pass
         self.root.after(33, self._tick)
@@ -2806,25 +3259,14 @@ class OneshotApp:
         self.txt_telem.insert("1.0", "\n".join(lines))
         self.txt_telem.config(state="disabled")
 
-    def _refresh_score(self):
-        score = calculate_score()
-        state.score = score
-        self.lbl_score.config(text=f"{score:.0f}")
-        if score >= 70:
-            color = Colors.SCORE_HIGH
-        elif score >= 35:
-            color = Colors.SCORE_MID
-        else:
-            color = Colors.SCORE_LOW
-        self.lbl_score.config(fg=color)
+    _tk_chart = None
 
-        self.cvs_bar.delete("all")
-        w = max(self.cvs_bar.winfo_width(), 1)
-        h = max(self.cvs_bar.winfo_height(), 1)
-        self.cvs_bar.create_rectangle(0, 0, w, h, fill=Colors.DARK_GRAY, outline="")
-        bar_w = int(w * score / 100)
-        if bar_w > 0:
-            self.cvs_bar.create_rectangle(0, 0, bar_w, h, fill=color, outline="")
+    def _render_chart(self):
+        """Render the matplotlib error chart into the bottom-left canvas."""
+        chart_img = _get_chart_image()
+        if chart_img is None:
+            return
+        self._render_canvas(self.cvs_chart, chart_img, "_tk_chart")
 
     def run(self):
         self.root.mainloop()
@@ -2874,6 +3316,8 @@ def start():
     # If the runtime supports physics calls, IMU data will be live.
     # If not (e.g. older sim build), it gracefully falls back to zeros.
 
+    print("[start] color init done", flush=True)
+
     # -- Try loading ML model for car tracking --
     if PYCORAL_AVAILABLE:
         model_search_paths = [
@@ -2903,9 +3347,12 @@ def start():
     elif HAS_DISPLAY:
         # OpenCV fallback: set up the trackbar tuner window
         _cv_setup_tuner(state.mode)
-    else:
-        # Headless: launch web dashboard in browser
-        _start_web_dashboard()
+
+    print("[start] launching web dashboard …", flush=True)
+    # Always start web dashboard so it's accessible from any browser,
+    # even when a local GUI (tkinter / OpenCV) is also active.
+    _start_web_dashboard()
+    print("[start] web dashboard OK", flush=True)
 
     # Welcome banner
     if HAS_TKINTER:
@@ -2919,10 +3366,10 @@ def start():
         "\u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557\n"
         "\u2551        RACECAR Neo \u00b7 OneShot Autonomy Lab            \u2551\n"
         "\u2560\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2563\n"
-        "\u2551  Modes: Line Following \u00b7 Wall Following \u00b7 Car Track  \u2551\n"
+        "\u2551  Modes: Line Follow \u00b7 Wall Follow \u00b7 Car Track \u00b7 Safety\u2551\n"
         f"\u2551  GUI:   {gui_type:<47}\u2551\n"
         "\u2551  Drive: Hold RIGHT TRIGGER                             \u2551\n"
-        "\u2551  Switch: A=Save/Line  B=Wall  Y=CarTrack               \u2551\n"
+        "\u2551  Switch: A=Line  B=Wall  Y=Car  (Safety via GUI/Web)   \u2551\n"
     )
     if not HAS_DISPLAY:
         print(
@@ -2941,9 +3388,52 @@ def _launch_gui():
     app.run()
 
 
+def _encode_jpeg_safe(img_in, width, height, quality, label="img"):
+    """Encode a numpy BGR image to JPEG bytes, safely.
+
+    Uses Pillow to avoid cv.resize/cv.imencode ARM NEON segfaults on RPi 4B.
+    Falls back to OpenCV if Pillow is unavailable.
+    Returns JPEG bytes or None.
+    """
+    if img_in is None:
+        return None
+    try:
+        # Always work on a contiguous copy to avoid stale-buffer segfaults
+        arr = np.array(img_in, copy=True, order='C')
+        if arr.size == 0 or len(arr.shape) < 2:
+            return None
+
+        if HAS_PILLOW:
+            # --- Pillow path (safe on ARM) ---
+            if len(arr.shape) == 2:
+                pil_img = _PILImage.fromarray(arr, mode='L').convert('RGB')
+            else:
+                # OpenCV is BGR, Pillow expects RGB — swap with numpy (no OpenCV call)
+                pil_img = _PILImage.fromarray(arr[:, :, ::-1].copy(), mode='RGB')
+            pil_img = pil_img.resize((width, height), _PILImage.LANCZOS)
+            buf = _BytesIO()
+            pil_img.save(buf, format='JPEG', quality=quality)
+            return buf.getvalue()
+        else:
+            # --- OpenCV fallback ---
+            if len(arr.shape) == 2:
+                arr = cv.cvtColor(arr, cv.COLOR_GRAY2BGR)
+            small = cv.resize(arr, (width, height))
+            ok, buf = cv.imencode(".jpg", small, [cv.IMWRITE_JPEG_QUALITY, quality])
+            return buf.tobytes() if ok else None
+    except Exception as e:
+        if _update_count <= 5:
+            print(f"[jpeg] {label} error: {e}", flush=True)
+        return None
+
+
+_update_count = 0
 def update():
     """Called every frame (~60 FPS) by the racecar framework."""
-    global _tune_index, _pending_mode_switch
+    global _tune_index, _pending_mode_switch, _update_count
+    _update_count += 1
+    if _update_count <= 3:
+        print(f"[update] frame {_update_count}", flush=True)
 
     # -- Apply deferred mode switch from web dashboard (thread-safe) --
     if _pending_mode_switch is not None:
@@ -3011,6 +3501,8 @@ def update():
                 print(">>   IMU telemetry will show zeros.")
 
     # -- Run current autonomy mode --
+    if _update_count <= 3:
+        print(f"[update] mode={state.mode}", flush=True)
     try:
         if state.mode == "line_follow":
             update_line_follow()
@@ -3018,28 +3510,47 @@ def update():
             update_wall_follow()
         elif state.mode == "car_track":
             update_car_track()
+        elif state.mode == "safety_stop":
+            update_safety_stop()
     except Exception as e:
         print(f">> Mode update error: {e}")
 
-    # -- Pre-encode images as JPEG for web MJPEG streams --
-    # Done in the main thread so the HTTP threads never touch raw numpy arrays
-    # or call cv.imencode (which is the main bottleneck in the old polling model).
-    if not HAS_DISPLAY:
-        try:
-            _WEB_W, _WEB_H = 320, 240
-            if state.raw_image is not None:
-                small = cv.resize(state.raw_image, (_WEB_W, _WEB_H))
-                _, buf = cv.imencode(".jpg", small, [cv.IMWRITE_JPEG_QUALITY, 55])
-                state._jpeg_raw = buf.tobytes()
-            if state.processed_image is not None:
-                img = state.processed_image
-                if len(img.shape) == 2:
-                    img = cv.cvtColor(img, cv.COLOR_GRAY2BGR)
-                small = cv.resize(img, (_WEB_W, _WEB_H))
-                _, buf = cv.imencode(".jpg", small, [cv.IMWRITE_JPEG_QUALITY, 55])
-                state._jpeg_proc = buf.tobytes()
-        except Exception:
-            pass
+    if _update_count <= 3:
+        print(f"[update] mode done, rendering chart …", flush=True)
+    # -- Render error chart (throttled internally to ~10 Hz) --
+    _get_chart_image()
+    if _update_count <= 3:
+        print(f"[update] chart done, encoding JPEG …", flush=True)
+
+    # -- Pre-encode images as JPEG for web dashboard --
+    # Uses Pillow (PIL) instead of cv.imencode to avoid ARM/NEON segfaults
+    # that plague cv.resize + cv.imencode on Raspberry Pi 4B.
+    _WEB_W, _WEB_H = 480, 360
+    _JPEG_Q = 75
+
+    try:
+        if state.raw_image is not None:
+            raw_jpg = _encode_jpeg_safe(state.raw_image, _WEB_W, _WEB_H, _JPEG_Q, "raw")
+            if raw_jpg is not None:
+                state._jpeg_raw = raw_jpg
+        if _update_count <= 5:
+            print("[update] raw JPEG done", flush=True)
+
+        if state.processed_image is not None:
+            proc_jpg = _encode_jpeg_safe(state.processed_image, _WEB_W, _WEB_H, _JPEG_Q, "proc")
+            if proc_jpg is not None:
+                state._jpeg_proc = proc_jpg
+        if _update_count <= 5:
+            print("[update] proc JPEG done", flush=True)
+    except Exception as e:
+        if _update_count <= 5:
+            print(f"[update] JPEG block error: {e}", flush=True)
+
+    # -- Pre-build JSON state for web dashboard --
+    try:
+        _build_state_json()
+    except Exception:
+        pass
 
     # -- Headless controller tuning (no display) --
     if not HAS_DISPLAY:
@@ -3051,7 +3562,7 @@ def update():
 
 
 def update_slow():
-    """Called once per second - updates dot matrix and score."""
+    """Called once per second - updates dot matrix and headless status."""
     update_dot_matrix()
     if not HAS_DISPLAY:
         _headless_print_status()
@@ -3062,5 +3573,7 @@ def update_slow():
 ########################################################################################
 
 if __name__ == "__main__":
+    print("[main] registering callbacks …", flush=True)
     rc.set_start_update(start, update, update_slow)
+    print("[main] calling rc.go() …", flush=True)
     rc.go()
