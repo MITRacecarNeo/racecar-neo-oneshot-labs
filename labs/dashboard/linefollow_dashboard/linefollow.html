@@ -3,85 +3,86 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Line Follow Dashboard</title>
+<title>Line follow - RACECAR Neo</title>
+<!-- RACECAR Neo V2 styles from labs/web/ (racecar_neo_ros2_driver scripts/web/):
+     tokens and rcn-* components in rcn.css, time charts in charts.js. The
+     reference page for this standard is wallfollow_dashboard/wallfollow.html.
+     battery.js, lost.js and override.js are left out: they talk to the car's
+     8080 home page, which the simulator lacks. -->
+<link rel="stylesheet" href="/ui/rcn.css?v=13">
+<link rel="icon" href="/ui/brand/app-icon-32.png">
+<script src="/ui/charts.js?v=13"></script>
 <style>
-  /* Neobotics tokens, same scheme as the wallfollow, pursuit, and smartfollow dashboards. */
-  :root { --white: #FFFFFF; --halo: #F5F5F7; --steel: #E2E2E2; --carbon: #1D1D27; --tarmac: #1B2036; --red: #FF0033; --gold: #FFD700; }
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background: var(--white); color: var(--carbon); }
-  .topbar { background: var(--tarmac); color: var(--halo); padding: 0.8rem 1.5rem; display: flex; justify-content: space-between; align-items: center; }
-  .topbar button { background: transparent; border: 1px solid rgba(245, 245, 247, 0.5); color: var(--halo); font-family: inherit; padding: 0.4rem 1rem; border-radius: 6px; cursor: pointer; margin: 0 0 0 0.5rem; }
-  .topbar button:hover { background: rgba(245, 245, 247, 0.15); }
-  .topbar button.stop { border-color: var(--red); color: var(--red); font-weight: bold; }
-  .topbar button.stop:hover { background: var(--red); color: var(--white); }
-  .topbar h1 { font-family: 'Space Grotesk', 'Helvetica Neue', sans-serif; font-size: 1.3rem; }
-  .meta { color: rgba(245, 245, 247, 0.72); font-size: 0.85rem; margin-top: 0.2rem; }
-  .meta b { color: var(--white); }
-  main { padding: 1rem 1.5rem; }
-  /* 592 = 560 + the card's 1rem padding either side, so a view inside one of
-     these columns lands at exactly 560 px, the width the sibling dashboards
-     cap their camera at. Row 1: color view, mask view, then the state box
-     and its offset trace over the rest of the width. Row 2 is the tune
-     panel, full width. */
-  .grid { display: grid; grid-template-columns: 592px 592px 1fr; gap: 1rem; }
+  .rcn-header .heading { display: flex; flex-direction: column; min-width: 0; }
+  .rcn-header .meta { font: 600 13px/18px var(--rcn-font-sans); color: var(--rcn-text-muted); }
+  .rcn-header .meta b { color: var(--rcn-text); font-variant-numeric: tabular-nums; }
+  main { max-width: 1800px; margin: 0 auto; padding: var(--rcn-space-4); display: grid; gap: var(--rcn-space-4); }
+  /* 592 = 560 + the card's 16 px padding either side, so a view inside one of
+     these columns lands at 560 px, the width the sibling dashboards cap their
+     camera at. Row 1: color view, mask view, then the state box and its
+     offset trace over the rest of the width. Row 2 is the tune panel. */
+  .grid { display: grid; grid-template-columns: 592px 592px minmax(0, 1fr); gap: var(--rcn-space-4); }
   @media (max-width: 1400px) { .grid { grid-template-columns: 1fr; } }
-  .card { background: var(--white); border: 1px solid var(--steel); border-radius: 12px; padding: 1rem; margin-bottom: 1rem; box-shadow: 0 6px 18px rgba(29, 29, 39, 0.08); }
-  .card h2 { font-family: 'Space Grotesk', 'Helvetica Neue', sans-serif; font-size: 1rem; color: var(--tarmac); margin-bottom: 0.5rem; }
-  .card h3 { font-family: 'Space Grotesk', 'Helvetica Neue', sans-serif; font-size: 0.85rem; color: var(--tarmac); margin-top: 0.9rem; padding-bottom: 0.2rem; border-bottom: 1px solid var(--steel); }
-  .view { background: var(--tarmac); border-radius: 6px; width: 100%; max-width: 560px; height: auto; display: block; aspect-ratio: 4 / 3; object-fit: contain; }
-  canvas { background: var(--tarmac); border-radius: 6px; width: 100%; height: auto; display: block; }
-  label { display: block; color: rgba(29, 29, 39, 0.6); font-size: 0.8rem; margin-top: 0.6rem; }
-  label b { color: var(--carbon); }
-  input[type=number] { width: 6rem; background: var(--white); border: 1px solid var(--steel); color: var(--carbon); font-family: inherit; padding: 0.3rem; border-radius: 6px; margin-left: 0.4rem; }
-  input[type=range] { width: 100%; accent-color: var(--red); border: none; padding: 0; }
-  button, select { background: var(--white); border: 1px solid var(--tarmac); color: var(--tarmac); font-family: inherit; padding: 0.35rem 0.8rem; border-radius: 6px; margin: 0.8rem 0.4rem 0 0; cursor: pointer; }
-  button:hover { background: var(--steel); }
-  .readout { font-size: 0.85rem; margin-top: 0.5rem; white-space: pre-line; }
+  .card { background: var(--rcn-surface); border-radius: var(--rcn-radius-md); padding: var(--rcn-space-4); min-width: 0; }
+  .card h2 { font-size: 20px; line-height: 28px; margin-bottom: var(--rcn-space-3); }
+  .card h3 { font: 600 14px/20px var(--rcn-font-sans); margin-top: var(--rcn-space-4); padding-bottom: var(--rcn-space-1); border-bottom: 1px solid var(--rcn-border); }
+  .caption { font: 600 13px/18px var(--rcn-font-sans); color: var(--rcn-text-muted); margin-top: var(--rcn-space-2); }
+  .view { background: var(--rcn-code-bg); border-radius: var(--rcn-radius-sm); width: 100%; max-width: 560px; height: auto; display: block; aspect-ratio: 4 / 3; object-fit: contain; }
+  label { display: block; color: var(--rcn-text-muted); font-size: 14px; line-height: 20px; font-weight: 600; margin-top: var(--rcn-space-3); }
+  label b { color: var(--rcn-text); font-variant-numeric: tabular-nums; }
+  input[type=number].rcn-input { width: 7rem; padding: 4px 8px; margin-left: var(--rcn-space-2); }
+  input[type=range] { width: 100%; }
+  select.rcn-input { max-width: 220px; }
+  .tools { display: flex; flex-wrap: wrap; gap: var(--rcn-space-2); align-items: center; margin-top: var(--rcn-space-4); }
+  .rcn-chart { height: 200px; }
+  .rcn-legend { margin-top: var(--rcn-space-2); }
   /* Whether the line is in the band, the one thing readable from across the room. */
-  .state { font-family: 'Space Grotesk', 'Helvetica Neue', sans-serif; font-size: 1.35rem;
-           color: var(--white); background: var(--tarmac); border-radius: 8px;
-           padding: 1.1rem 0.6rem; text-align: center; letter-spacing: 0.02em; }
-  .state.lost { background: var(--red); }
+  .state { font: 800 italic 25px/32px var(--rcn-font-display); text-transform: uppercase; letter-spacing: 0.02em;
+           color: var(--rcn-paper); background: var(--rcn-success); border-radius: var(--rcn-radius-md);
+           padding: var(--rcn-space-4) var(--rcn-space-2); text-align: center; }
+  .state.lost { background: var(--rcn-crimson); }
   /* The four trackbar groups sit in a row so the full-width tune card stays
      short; each group keeps its own order top to bottom. */
-  .tunecols { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0 1.5rem; }
+  .tunecols { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0 var(--rcn-space-6); }
   @media (max-width: 1100px) { .tunecols { grid-template-columns: 1fr 1fr; } }
   @media (max-width: 600px) { .tunecols { grid-template-columns: 1fr; } }
   /* A two-thumb range: two native sliders stacked on one track. The track
      of each is invisible and ignores the pointer; only the thumbs catch it,
      so both can be dragged wherever they sit. The fill between them is a
      div underneath. */
-  .dual { position: relative; height: 28px; margin-top: 0.3rem; }
-  .dual .track { position: absolute; left: 0; right: 0; top: 11px; height: 6px; border-radius: 3px; background: var(--steel); }
+  .dual { position: relative; height: 28px; margin-top: var(--rcn-space-1); color: var(--rcn-accent); }
+  .dual .track { position: absolute; left: 0; right: 0; top: 11px; height: 6px; border-radius: 3px; background: var(--rcn-steel); }
   .dual .track.hue { background: linear-gradient(to right, #f00 0%, #ff0 17%, #0f0 33%, #0ff 50%, #00f 67%, #f0f 83%, #f00 100%); }
-  .dual .fill { position: absolute; top: 11px; height: 6px; background: var(--red); border-radius: 3px; pointer-events: none; }
-  .dual .track.hue + .fill { background: rgba(29, 29, 39, 0.35); border: 1px solid var(--carbon); top: 10px; height: 8px; }
+  .dual .fill { position: absolute; top: 11px; height: 6px; background: currentColor; border-radius: 3px; pointer-events: none; }
+  .dual .track.hue + .fill { color: rgba(35, 31, 32, 0.45); border: 1px solid var(--rcn-paper); top: 10px; height: 8px; }
   .dual input[type=range] { position: absolute; left: 0; right: 0; top: 0; width: 100%; height: 28px; margin: 0; background: transparent; -webkit-appearance: none; appearance: none; pointer-events: none; }
   .dual input[type=range]::-webkit-slider-runnable-track { background: transparent; height: 28px; }
   .dual input[type=range]::-moz-range-track { background: transparent; height: 28px; }
-  .dual input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; pointer-events: auto; width: 16px; height: 16px; margin-top: 6px; border-radius: 50%; background: var(--white); border: 2px solid var(--red); cursor: pointer; }
-  .dual input[type=range]::-moz-range-thumb { pointer-events: auto; width: 12px; height: 12px; border-radius: 50%; background: var(--white); border: 2px solid var(--red); cursor: pointer; }
+  .dual input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; pointer-events: auto; width: 16px; height: 16px; margin-top: 6px; border-radius: 50%; background: var(--rcn-paper); border: 2px solid var(--rcn-accent); cursor: pointer; }
+  .dual input[type=range]::-moz-range-thumb { pointer-events: auto; width: 12px; height: 12px; border-radius: 50%; background: var(--rcn-paper); border: 2px solid var(--rcn-accent); cursor: pointer; }
+  #toast { position: fixed; left: 50%; bottom: var(--rcn-space-6); transform: translateX(-50%); padding: var(--rcn-space-2) var(--rcn-space-4); border-radius: var(--rcn-radius-md); background: var(--rcn-ink); border: 1px solid var(--rcn-steel); font-weight: 600; opacity: 0; transition: opacity 0.2s; pointer-events: none; }
+  #toast.show { opacity: 1; }
 </style>
 </head>
 <body>
+<header class="rcn-header">
+  <img class="rcn-mark" src="/ui/brand/mark.png" alt="RACECAR Neo">
+  <div class="heading">
+    <span class="rcn-title">Line follow</span>
+    <span class="meta">line <b id="mode">-</b> &middot; offset <b id="err">-</b> &middot; steer <b id="steer">-</b>
+      &middot; throttle <b id="thr">-</b> &middot; encoder <b id="enc">-</b> m/s
+      &middot; camera <b id="fps">-</b> fps &middot; processed <b id="pfps">-</b> fps &middot; frame <b id="res">-</b></span>
+  </div>
+  <span class="rcn-spacer"></span>
+  <button class="rcn-btn quiet small" onclick="reset()" title="Re-read linefollow.yaml.">Reset</button>
+  <button class="rcn-btn danger small" onclick="stopCar()" title="Set speed to 0.">Stop</button>
+</header>
 
-<div class="topbar">
-<div>
-<h1>Line Follow Dashboard</h1>
-<div class="meta">line: <b id="mode">?</b> &bull; offset: <b id="err">?</b> &bull; steer: <b id="steer">?</b>
-  &bull; throttle: <b id="thr">?</b> &bull; encoder: <b id="enc">?</b> m/s
-  &bull; camera: <b id="fps">?</b> fps &bull; processed: <b id="pfps">?</b> fps &bull; frame: <b id="res">?</b></div>
-</div>
-<div>
-<button class="stop" onclick="stopCar()" title="Set speed to 0">STOP</button>
-<button onclick="reset()" title="Re-read linefollow.yaml">Reset</button>
-</div>
-</div>
 <main>
 <div class="grid">
   <div class="card">
     <h2>Camera</h2>
-    <img id="color" class="view" alt="color view" title="Gold box: crop band. Red: largest contour and its center. Grey: setpoint.">
+    <img id="color" class="view" alt="color view" title="Gold box: crop band. Orange: largest contour and its center. Gray: setpoint.">
   </div>
   <div class="card">
     <h2>Mask</h2>
@@ -91,7 +92,8 @@
     <h2>State</h2>
     <div class="state" id="state"></div>
     <h3>Line offset vs setpoint (live)</h3>
-    <canvas id="chart" width="420" height="160" title="-1 is the left edge of the frame, +1 the right. A flat trace at 0 is a stable follower; a growing zigzag is too much angle_kp or too little angle_kd."></canvas>
+    <div class="rcn-chart" id="chart" title="-1 is the left edge of the frame, +1 the right. A flat trace at 0 is a stable follower; a growing zigzag is too much angle_kp or too little angle_kd."></div>
+    <div class="rcn-legend" id="chartLegend"></div>
   </div>
 </div>
 
@@ -110,27 +112,37 @@
       <h3 title="Fractions of the frame from the top. Move both edges together to look higher or lower; spread them to take in more floor.">3. Crop band</h3>
       <div id="cropform"></div>
       <label title="Smallest contour, in pixels, that counts as the line. Raise it to ignore specks.">min_area
-        <input id="in_min_area" type="number" step="1" min="1" onchange="post('/params', {min_area: parseInt(this.value)})"></label>
+        <input id="in_min_area" class="rcn-input" type="number" step="1" min="1" onchange="post('/params', {min_area: parseInt(this.value)})"></label>
     </div>
     <div>
       <h3 title="speed_kp slows the car as the line drifts from center; angle_kd damps the steering on the change in offset; max_speed scales the throttle the car is sent.">4. Proportional speed and derivative angle</h3>
       <div id="pdform"></div>
     </div>
   </div>
-  <button onclick="post('/save')">Save</button>
-  <button onclick="reset()">Load</button>
+  <div class="tools">
+    <button class="rcn-btn primary small" onclick="saveTune()">Save</button>
+    <button class="rcn-btn quiet small" onclick="loadTune()">Load</button>
+  </div>
 </div>
 
 <div class="card">
   <h2>Logs</h2>
-  <button onclick="saveLog()">Save log</button>
-  <select id="logsel"></select>
-  <button onclick="loadLog()">Load log</button>
-  <span class="readout" id="loginfo"></span>
-  <canvas id="logchart" width="900" height="160"></canvas>
+  <div class="tools" style="margin-top: 0">
+    <button class="rcn-btn quiet small" onclick="saveLog()">Save log</button>
+    <select class="rcn-input" id="logsel" aria-label="Log file"></select>
+    <button class="rcn-btn quiet small" onclick="loadLog()">Load log</button>
+    <span class="caption" id="loginfo" style="margin-top: 0"></span>
+  </div>
+  <div class="rcn-chart" id="logChart" style="margin-top: var(--rcn-space-3)"></div>
+  <div class="rcn-legend" id="logLegend"></div>
 </div>
+</main>
+<div id="toast" role="status"></div>
 
 <script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const { timeChart, legendHtml, recentTicks, niceTicks } = RcnCharts;
 // Single-thumb trackbars, in the order each group shows them.
 const SLIDERS = {
   driveform: [
@@ -156,8 +168,12 @@ const DUALS = [
 
 let last = null;
 
-function post(path, body) {
-  return fetch(path, { method: 'POST', body: body ? JSON.stringify(body) : null });
+function post(path, body) { return fetch(path, { method: 'POST', body: body ? JSON.stringify(body) : null }); }
+function toast(msg) {
+  const t = $('toast');
+  t.textContent = msg; t.classList.add('show');
+  clearTimeout(window.toastTimer);
+  window.toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
 }
 
 // A trackbar fires on every pixel of a drag. Send at most one update per
@@ -174,24 +190,21 @@ function queue(key, value) {
   }, SEND_MS);
 }
 
-function reset() {
-  // Re-read the yaml and rebuild every trackbar.
-  post('/load').then(() => { document.getElementById('hsvform').dataset.built = ''; });
-}
-
-function stopCar() {
-  post('/params', { speed: 0 }).then(() => { document.getElementById('hsvform').dataset.built = ''; });
-}
+// Re-read the yaml and rebuild every trackbar.
+function reset() { post('/load').then(() => { $('hsvform').dataset.built = ''; }); }
+function stopCar() { post('/params', { speed: 0 }).then(() => { $('hsvform').dataset.built = ''; }); }
+function saveTune() { post('/save').then(() => toast('Saved.')); }
+function loadTune() { post('/load').then(() => { $('hsvform').dataset.built = ''; toast('Loaded.'); }); }
 
 function showVal(key, v) {
-  const el = document.getElementById(`val_${key}`);
+  const el = $(`val_${key}`);
   if (el) el.textContent = v;
 }
 
 function setFill(d) {
-  const lo = parseInt(document.getElementById(`in_${d.lo}`).value);
-  const hi = parseInt(document.getElementById(`in_${d.hi}`).value);
-  const fill = document.getElementById(`fill_${d.lo}`);
+  const lo = parseInt($(`in_${d.lo}`).value);
+  const hi = parseInt($(`in_${d.hi}`).value);
+  const fill = $(`fill_${d.lo}`);
   if (lo <= hi) {
     fill.style.left = `${lo / d.max * 100}%`;
     fill.style.width = `${(hi - lo) / d.max * 100}%`;
@@ -202,40 +215,40 @@ function setFill(d) {
     fill.style.left = '0%'; fill.style.width = '100%';
     fill.style.background = `linear-gradient(to right, currentColor ${hi / d.max * 100}%, transparent ${hi / d.max * 100}%, transparent ${lo / d.max * 100}%, currentColor ${lo / d.max * 100}%)`;
   }
-  document.getElementById(`val_${d.lo}`).textContent = `${lo} to ${hi}${lo > hi ? ' (wraps)' : ''}`;
+  $(`val_${d.lo}`).textContent = `${lo} to ${hi}${lo > hi ? ' (wraps)' : ''}`;
 }
 
 function buildForm(p) {
   // Rebuild only on Reset/Load/Stop so a drag is not interrupted by polling.
-  const anchor = document.getElementById('hsvform');
+  const anchor = $('hsvform');
   if (anchor.dataset.built) return;
   anchor.dataset.built = '1';
   anchor.innerHTML = DUALS.map(d => `
     <label title="${d.tip}">${d.label} <b id="val_${d.lo}"></b></label>
     <div class="dual" title="${d.tip}">
       <div class="track ${d.cls}"></div>
-      <div class="fill" id="fill_${d.lo}" style="color: var(--red)"></div>
+      <div class="fill" id="fill_${d.lo}"></div>
       <input id="in_${d.lo}" type="range" min="0" max="${d.max}" step="1" value="${p[d.lo]}">
       <input id="in_${d.hi}" type="range" min="0" max="${d.max}" step="1" value="${p[d.hi]}">
     </div>`).join('');
   for (const d of DUALS) {
     for (const k of [d.lo, d.hi]) {
-      document.getElementById(`in_${k}`).oninput = e => { setFill(d); queue(k, parseInt(e.target.value)); };
+      $(`in_${k}`).oninput = e => { setFill(d); queue(k, parseInt(e.target.value)); };
     }
     setFill(d);
   }
   for (const [form, list] of Object.entries(SLIDERS)) {
-    document.getElementById(form).innerHTML = list.map(s => `
+    $(form).innerHTML = list.map(s => `
       <label title="${s.tip}">${s.label} <b id="val_${s.key}">${p[s.key]}</b>
         <input id="in_${s.key}" type="range" min="${s.min}" max="${s.max}" step="${s.step}" value="${p[s.key]}"></label>`).join('');
     for (const s of list) {
-      document.getElementById(`in_${s.key}`).oninput = e => {
+      $(`in_${s.key}`).oninput = e => {
         showVal(s.key, e.target.value);
         queue(s.key, parseFloat(e.target.value));
       };
     }
   }
-  document.getElementById('in_min_area').value = p.min_area;
+  $('in_min_area').value = p.min_area;
 }
 
 // The service clamps what it is sent (band order, ranges), so after a drag
@@ -245,14 +258,14 @@ function syncForm(p) {
   if (document.querySelector('input:active')) return;
   for (const list of Object.values(SLIDERS)) {
     for (const s of list) {
-      const el = document.getElementById(`in_${s.key}`);
+      const el = $(`in_${s.key}`);
       if (el && parseFloat(el.value) !== p[s.key]) { el.value = p[s.key]; showVal(s.key, p[s.key]); }
     }
   }
   for (const d of DUALS) {
     let moved = false;
     for (const k of [d.lo, d.hi]) {
-      const el = document.getElementById(`in_${k}`);
+      const el = $(`in_${k}`);
       if (el && parseInt(el.value) !== p[k]) { el.value = p[k]; moved = true; }
     }
     if (moved) setFill(d);
@@ -262,7 +275,7 @@ function syncForm(p) {
 // Pull frames one at a time so a congested link drops frame rate instead
 // of building a lag queue. Pauses when the tab is hidden.
 function liveLoop(id, path, period) {
-  const img = document.getElementById(id);
+  const img = $(id);
   (function tick() {
     if (document.hidden) { setTimeout(tick, 250); return; }
     const t = Date.now();
@@ -277,69 +290,8 @@ function liveLoop(id, path, period) {
 liveLoop('color', '/frame/color', 120);
 liveLoop('mask', '/frame/mask', 120);
 
-function drawSeries(canvasId, series, labels, marks, bands) {
-  // series: list of {pts: [[t, v]], color}. Each scaled to its own max.
-  // marks: [[t, label]] tuning changes, drawn as glowing yellow lines.
-  // bands: [[t, flag]] where the line was lost, a strip along the bottom.
-  const cv = document.getElementById(canvasId), x = cv.getContext('2d');
-  x.clearRect(0, 0, cv.width, cv.height);
-  if (bands && bands.length > 1) {
-    const b0 = bands[0][0], b1 = bands[bands.length - 1][0];
-    for (let i = 0; i < bands.length - 1; i++) {
-      const px = (bands[i][0] - b0) / (b1 - b0 || 1) * cv.width;
-      const pw = Math.max(1, (bands[i + 1][0] - bands[i][0]) / (b1 - b0 || 1) * cv.width + 0.5);
-      x.fillStyle = bands[i][1] ? '#FF0033' : 'rgba(245, 245, 247, 0.22)';
-      x.fillRect(px, cv.height - 5, pw, 5);
-    }
-  }
-  x.strokeStyle = 'rgba(245, 245, 247, 0.48)'; x.setLineDash([4, 4]);
-  x.beginPath(); x.moveTo(0, cv.height / 2); x.lineTo(cv.width, cv.height / 2); x.stroke();
-  x.setLineDash([]);
-  for (const s of series) {
-    if (s.pts.length < 2) continue;
-    const t0 = s.pts[0][0], t1 = s.pts[s.pts.length - 1][0];
-    const max = s.fixed || Math.max(0.2, ...s.pts.map(p => Math.abs(p[1])));
-    x.strokeStyle = s.color; x.lineWidth = 1.5; x.beginPath();
-    for (let i = 0; i < s.pts.length; i++) {
-      const px = (s.pts[i][0] - t0) / (t1 - t0 || 1) * cv.width;
-      const py = cv.height / 2 - s.pts[i][1] / max * (cv.height / 2 - 8);
-      i ? x.lineTo(px, py) : x.moveTo(px, py);
-    }
-    x.stroke();
-    s.max = max;
-  }
-  const m0 = series[0];
-  if (marks && m0 && m0.pts.length > 1) {
-    const t0 = m0.pts[0][0], t1 = m0.pts[m0.pts.length - 1][0];
-    x.save();
-    for (const [t, label] of marks) {
-      if (t < t0 || t > t1) continue;
-      const px = (t - t0) / (t1 - t0 || 1) * cv.width;
-      x.strokeStyle = '#FFD700'; x.lineWidth = 1.5;
-      x.shadowColor = '#FFD700'; x.shadowBlur = 8;
-      x.setLineDash([6, 4]);
-      x.beginPath(); x.moveTo(px, 18); x.lineTo(px, cv.height); x.stroke();
-      x.setLineDash([]);
-      x.fillStyle = '#FFD700'; x.font = '11px Helvetica';
-      x.fillText(label, Math.min(px + 4, cv.width - x.measureText(label).width - 4), 30);
-    }
-    x.restore();
-  }
-  // Axis values from the first series: y ticks at +max / 0 / -max, x in seconds.
-  const s0 = series[0];
-  if (s0 && s0.pts.length > 1) {
-    const t0 = s0.pts[0][0], t1 = s0.pts[s0.pts.length - 1][0];
-    x.fillStyle = 'rgba(245, 245, 247, 0.72)'; x.font = '11px Helvetica';
-    x.fillText(`+${s0.max.toFixed(2)}`, 4, 28);
-    x.fillText('0', 4, cv.height / 2 - 4);
-    x.fillText(`-${s0.max.toFixed(2)}`, 4, cv.height - 22);
-    x.fillText(`${t0.toFixed(1)} s`, 4, cv.height - 8);
-    const end = `${t1.toFixed(1)} s`;
-    x.fillText(end, cv.width - x.measureText(end).width - 4, cv.height - 8);
-  }
-  x.fillStyle = '#F5F5F7'; x.font = '12px Helvetica';
-  x.fillText(labels(series), 8, 14);
-}
+const shown = new Map();
+function setLegend(id, html) { if (shown.get(id) !== html) { shown.set(id, html); $(id).innerHTML = html; } }
 
 let busy = false;
 function update() {
@@ -348,17 +300,17 @@ function update() {
   fetch('/state').then(r => r.json()).then(d => {
     busy = false;
     last = d;
-    document.getElementById('mode').textContent = d.found ? 'found' : 'lost';
-    document.getElementById('err').textContent = d.error;
-    document.getElementById('steer').textContent = d.steer;
-    document.getElementById('thr').textContent = d.speed_cmd;
-    document.getElementById('enc').textContent = d.enc_speed;
-    document.getElementById('fps').textContent = d.cam_fps;
-    document.getElementById('pfps').textContent = d.proc_fps;
-    document.getElementById('res').textContent = d.res[0] ? `${d.res[0]}x${d.res[1]} -> ${d.proc_res[0]}x${d.proc_res[1]}` : 'none';
+    $('mode').textContent = d.found ? 'found' : 'lost';
+    $('err').textContent = d.error;
+    $('steer').textContent = d.steer;
+    $('thr').textContent = d.speed_cmd;
+    $('enc').textContent = d.enc_speed;
+    $('fps').textContent = d.cam_fps;
+    $('pfps').textContent = d.proc_fps;
+    $('res').textContent = d.res[0] ? `${d.res[0]}x${d.res[1]} -> ${d.proc_res[0]}x${d.proc_res[1]}` : 'none';
 
-    const box = document.getElementById('state');
-    box.textContent = d.found ? 'LINE FOUND' : 'LINE LOST';
+    const box = $('state');
+    box.textContent = d.found ? 'Line found' : 'Line lost';
     box.className = 'state' + (d.found ? '' : ' lost');
     // What the box would have said in words is on hover instead.
     box.title = d.found
@@ -370,14 +322,23 @@ function update() {
     syncForm(d.params);
     // The offset is already -1..1, so the axis is fixed rather than fit to
     // the data: a small wobble looks small.
-    drawSeries('chart', [{ pts: d.hist, color: '#FF0033', fixed: 1 }],
-      () => `offset ${d.error} (red) | setpoint 0 (dashed) | band: red = line lost`,
-      d.marks, d.hist.map(r => [r[0], r[2]]));
+    const hist = d.hist || [];
+    const now = hist.length ? hist[hist.length - 1][0] : 0;
+    const t0 = hist.length ? hist[0][0] : now - 1;
+    timeChart($('chart'), t0, now,
+      [{ name: 'Offset', style: 'a', axis: 'l', unit: '', digits: 2, minSpan: 0.1, pts: hist.map(r => [r[0], r[1]]) }],
+      recentTicks(now, 10), { gapSec: 0.5, fixed: { l: [-1, 1] }, marks: d.marks, bands: hist.map(r => [r[0], r[2]]) });
+    setLegend('chartLegend', legendHtml([{ name: 'Offset (-1 to 1), setpoint 0; red strip: line lost', style: 'a' }]));
   }).catch(() => { busy = false; });
 }
 
+const logTicks = (t0) => Object.assign((a, b) => {
+  const step = niceTicks(0, b - a, 5)[1] || 1, out = [];
+  for (let s = 0; s <= b - a + 1e-6; s += step) out.push([a + s, `${(a + s - t0).toFixed(0)} s`]);
+  return out;
+}, { label: (t) => `${(t - t0).toFixed(1)} s` });
 function loadLog() {
-  const f = document.getElementById('logsel').value;
+  const f = $('logsel').value;
   if (!f) return;
   fetch('/logs/' + f).then(r => r.text()).then(txt => {
     const lines = txt.trim().split('\n');
@@ -385,24 +346,23 @@ function loadLog() {
       .map(l => { const p = l.split(','); return [parseFloat(p[1]), p.slice(2).join(',')]; });
     const rows = lines.filter(l => !l.startsWith('#')).slice(1).map(l => l.split(',').map(Number));
     const lostRows = rows.filter(r => r[5]).length;
-    document.getElementById('loginfo').textContent =
-      `${f}: ${rows.length} frames, ${marks.length} changes, ${lostRows} with the line lost`;
-    drawSeries('logchart', [
-      { pts: rows.map(r => [r[0], r[1]]), color: '#FF0033', fixed: 1 },
-      { pts: rows.map(r => [r[0], r[2]]), color: '#FFFFFF', fixed: 1 },
-    ], () => 'offset (red) | steer (white) | both -1..1 | band: red = line lost',
-    marks, rows.map(r => [r[0], r[5]]));
+    $('loginfo').textContent = `${f}: ${rows.length} frames, ${marks.length} changes, ${lostRows} with the line lost`;
+    if (!rows.length) return;
+    const t0 = rows[0][0], t1 = rows[rows.length - 1][0];
+    timeChart($('logChart'), t0, t1, [
+      { name: 'Offset', style: 'a', axis: 'l', unit: '', digits: 3, minSpan: 0.1, pts: rows.map(r => [r[0], r[1]]) },
+      { name: 'Steer', style: 'b', axis: 'l', unit: '', digits: 3, minSpan: 0.1, pts: rows.map(r => [r[0], r[2]]) },
+    ], logTicks(t0), { gapSec: 0.5, fixed: { l: [-1, 1] }, marks, bands: rows.map(r => [r[0], r[5]]) });
+    setLegend('logLegend', legendHtml([{ name: 'Offset (-1 to 1)', style: 'a' }, { name: 'Steer (-1 to 1)', style: 'b' }]));
   });
 }
 
-function saveLog() {
-  // Snapshot what is on the live chart to a csv, then show it right away.
-  post('/logs/save').then(() => refreshLogs(true));
-}
+// Snapshot what is on the live chart to a csv, then show it right away.
+function saveLog() { post('/logs/save').then(() => { refreshLogs(true); toast('Log saved.'); }); }
 
 function refreshLogs(loadLatest) {
   fetch('/logs').then(r => r.json()).then(names => {
-    const sel = document.getElementById('logsel');
+    const sel = $('logsel');
     sel.innerHTML = names.map(n => `<option>${n}</option>`).join('');
     sel.selectedIndex = names.length - 1;  // Load defaults to the latest save
     if (loadLatest && names.length) loadLog();
@@ -414,6 +374,5 @@ refreshLogs(false);
 update();
 setInterval(update, 120);  // frames are processed at 20 Hz; poll a little faster
 </script>
-</main>
 </body>
 </html>

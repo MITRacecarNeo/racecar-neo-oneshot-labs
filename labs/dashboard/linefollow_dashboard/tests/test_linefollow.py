@@ -7,7 +7,11 @@ a painted stripe, and FakeRacecar records what reaches rc.drive.
 """
 
 import importlib.util
+import re
 import sys
+import threading
+import urllib.request
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
@@ -303,3 +307,47 @@ def test_thin_keeps_the_newest_row() -> None:
     assert len(sent) < len(rows)
     assert sent[-1] is rows[-1]
     assert lf._thin(rows[:50]) == rows[:50]  # short histories go through whole
+
+
+@pytest.fixture
+def server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
+    monkeypatch.setattr(lf, "LOG_DIR", tmp_path / "logs")
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), lf.Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{srv.server_address[1]}"
+    srv.shutdown()
+
+
+def test_http_serves_every_shared_asset_the_page_links(server: str) -> None:
+    page = (BASE / "linefollow.html").read_text()
+    refs = set(re.findall(r'(/ui/[^"?#]+)', page))
+    assert {"/ui/rcn.css", "/ui/charts.js", "/ui/brand/mark.png"} <= refs
+    for ref in refs:
+        with urllib.request.urlopen(server + ref + "?v=13") as r:
+            assert r.status == 200 and r.read()
+            assert r.headers["Cache-Control"] == "max-age=300"
+
+
+def test_page_matches_the_wallfollow_v2_standard() -> None:
+    page = (BASE / "linefollow.html").read_text()
+    ref = (BASE.parent / "wallfollow_dashboard" / "wallfollow.html").read_text()
+    for link in re.findall(r'<(?:link|script) [^>]*/ui/[^>]*>', ref):
+        assert link in page
+    for name in ("battery.js", "lost.js", "override.js"):
+        assert f"/ui/{name}" not in page
+    css = page.split("<style>")[1].split("</style>")[0]
+    css = css.replace(re.search(r"\.dual \.track\.hue \{[^}]*\}", css).group(0), "")
+    assert not re.search(r"#[0-9a-fA-F]{3,6}\b", css), "page CSS uses a color outside the --rcn-* tokens"
+
+
+def _bgr(token: str) -> Tuple[int, int, int]:
+    css = (BASE.parent / "web" / "rcn.css").read_text()
+    hexval = re.search(rf"--rcn-{token}: #([0-9a-fA-F]{{6}});", css).group(1)
+    r, g, b = (int(hexval[i:i + 2], 16) for i in (0, 2, 4))
+    return (b, g, r)
+
+
+def test_overlay_colors_are_v2_tokens() -> None:
+    assert lf.GOLD == _bgr("gold")
+    assert lf.ORANGE == _bgr("orange")
+    assert lf.MIST == _bgr("mist")

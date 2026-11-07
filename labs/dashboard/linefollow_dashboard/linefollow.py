@@ -40,6 +40,7 @@ slider is raised. Angles use the student convention (positive = right).
 import argparse
 import json
 import re
+import sys
 import threading
 import time
 from collections import deque
@@ -54,6 +55,10 @@ import yaml
 PORT = 8086
 BASE = Path(__file__).resolve().parent
 YAML_PATH = BASE / "linefollow.yaml"
+# Shared RACECAR Neo V2 styles, fonts and logos, served under /ui/
+# (../web/webui.py). wallfollow_dashboard/wallfollow.html is the reference page.
+sys.path.insert(0, str(BASE.parent / "web"))
+import webui  # noqa: E402
 LOG_DIR = BASE / "logs"
 
 MAX_SPEED = 1.0         # hard throttle cap before the max_speed scaling in rc.drive
@@ -62,10 +67,11 @@ MIN_BAND = 0.05         # crop_bottom - crop_top never below this fraction
 # The live chart is 420 px wide; send an even sample of the history rather
 # than every row. The log csv keeps all of them.
 HIST_POINTS = 300
-# Overlay colors, BGR, matching the dashboard's tokens.
-GOLD = (0, 215, 255)
-RED = (51, 0, 255)
-GREY = (200, 200, 200)
+# Overlay colors, BGR, from the V2 tokens in ../web/rcn.css: --rcn-gold
+# (crop band), --rcn-orange (line contour, the accent), --rcn-mist (setpoint).
+GOLD = (74, 184, 255)
+ORANGE = (75, 154, 244)
+MIST = (235, 227, 227)
 
 # Tunable from the dashboard, in the order the trackbars show them.
 HSV_KEYS = ("h_low", "h_high", "s_low", "s_high", "v_low", "v_high")
@@ -290,12 +296,12 @@ class LineFollower:
             cv2.rectangle(view, (0, int(top * sx)), (view.shape[1] - 1, int(bottom * sx) - 1),
                           GOLD, 1)
         cv2.line(color, (color.shape[1] // 2, 0), (color.shape[1] // 2, color.shape[0]),
-                 GREY, 1)
+                 MIST, 1)
         if contour is not None:
-            cv2.drawContours(color, [(contour * sx).astype(np.int32)], -1, RED, 2)
-            cv2.circle(color, (int(cx * sx), int(cy * sx)), 5, RED, -1)
+            cv2.drawContours(color, [(contour * sx).astype(np.int32)], -1, ORANGE, 2)
+            cv2.circle(color, (int(cx * sx), int(cy * sx)), 5, ORANGE, -1)
             cv2.line(color, (color.shape[1] // 2, int(cy * sx)), (int(cx * sx), int(cy * sx)),
-                     RED, 1)
+                     ORANGE, 1)
         quality = [cv2.IMWRITE_JPEG_QUALITY, int(p["preview_quality"])]
         with _lock:
             _preview_color = cv2.imencode(".jpg", color, quality)[1].tobytes()
@@ -346,6 +352,10 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def do_GET(self) -> None:
+        asset = webui.static_file(self.path)
+        if asset is not None:
+            self._send(asset[0], asset[1], cache=webui.CACHE_CONTROL)
+            return
         if self.path == "/":
             self._send((BASE / "linefollow.html").read_bytes(), "text/html; charset=utf-8")
         elif self.path.startswith("/frame/color") or self.path.startswith("/frame/mask"):

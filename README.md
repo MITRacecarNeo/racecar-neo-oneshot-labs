@@ -24,4 +24,4 @@ For more advanced demo files for workshops and tests, files are located in **lab
 Tuning dashboards located in **labs/dashboard**. Each one serves a browser page and runs in the sim (`-s`) or on the car (no flag). Tuned values are saved to the matching `.yaml` file.
 - **linefollow_dashboard/linefollow.py**: HSV threshold, crop band, and PD steering for a line follower, tuned from trackbars in the browser. Page: http://localhost:8086.
 - **wallfollow_dashboard/wallfollow.py**: LIDAR wall follower with PD steering, tuned from the browser. Page: http://localhost:8083. Shipped speed is 0.0, so the car does not move until speed is raised.
-- **web/**: shared styles, fonts, and icons served under `/ui/`. Required by the wall follow dashboard; keep it next to the dashboard folders.
+- **web/**: RACECAR Neo V2 styles, fonts, icons, and charts served under `/ui/`. Required by both dashboards; keep it next to the dashboard folders. `wallfollow_dashboard/wallfollow.html` is the reference page for the V2 standard.

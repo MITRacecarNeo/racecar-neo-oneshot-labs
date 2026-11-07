@@ -4,7 +4,20 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Wall follow - RACECAR Neo</title>
-<!-- Shared styles from labs/web/ (racecar_neo_ros2_driver scripts/web/).
+<!-- Reference page for the RACECAR Neo V2 dashboard standard. Every lab
+     dashboard (linefollow_dashboard/linefollow.html included) follows it:
+     - Styles: labs/web/rcn.css, vendored from racecar_neo_ros2_driver
+       scripts/web/, served by labs/web/webui.py. Dark theme only.
+     - Colors: --rcn-* tokens; a literal color only where the data needs
+       one (the hue spectrum on linefollow's HSV track). Background
+       --rcn-charcoal, cards --rcn-slate, accent and primary trace
+       --rcn-orange, highlights --rcn-gold, stop and alarms --rcn-crimson,
+       muted text and secondary traces --rcn-mist.
+     - Type: Barlow (body), Barlow Semi Condensed (titles), JetBrains Mono
+       (readouts), bundled under labs/web/fonts/.
+     - Components: rcn-header with mark.png, rcn-btn (primary, quiet,
+       danger), rcn-input, rcn-chart and rcn-legend drawn by
+       labs/web/charts.js.
      battery.js, lost.js and override.js are left out: they talk to the
      car's 8080 home page, which the simulator lacks. -->
 <link rel="stylesheet" href="/ui/rcn.css?v=13">
