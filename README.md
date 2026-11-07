@@ -1,6 +1,10 @@
 # racecar-neo-oneshot-labs
 Utility and quick-demo scripts for Autonomous RACECAR Neo
 
+## Table of contents
+- [Demo Files](#demo-files)
+- [Browser dashboards](#browser-dashboards)
+
 ## Demo Files
 For basic test and verification files located in **labs**, see below:
 - **demo.py**: When run, press the "A" button to show text to terminal, and the "B" button to drive forward and to the right for 1 second.
@@ -15,3 +19,9 @@ For more advanced demo files for workshops and tests, files are located in **lab
 - **lfss.py**: Line Following with Safety Stop tuner, assumes user is proficient with tuning the **hsv-p_tuner.py** and **ss-pd_tuner.py** files. Insert parameters to run on the vehicle and perform basic sensor fusion to follow a line and stop when an obstacle is detected.
 - **steering_trim**: Basic steering calibration for the vehicle. ***Caution***: Overwrites current pwm.py values and kills teleop!!
 - **lagmachine.py**: (Advanced) Implements an artificial delay between frames for line following to practice tuning a delay compensation controller.
+
+## Browser dashboards
+Tuning dashboards located in **labs/dashboard**. Each one serves a browser page and runs in the sim (`-s`) or on the car (no flag). Tuned values are saved to the matching `.yaml` file.
+- **linefollow_dashboard/linefollow.py**: HSV threshold, crop band, and PD steering for a line follower, tuned from trackbars in the browser. Page: http://localhost:8086.
+- **wallfollow_dashboard/wallfollow.py**: LIDAR wall follower with PD steering, tuned from the browser. Page: http://localhost:8083. Shipped speed is 0.0, so the car does not move until speed is raised.
+- **web/**: shared styles, fonts, and icons served under `/ui/`. Required by the wall follow dashboard; keep it next to the dashboard folders.
